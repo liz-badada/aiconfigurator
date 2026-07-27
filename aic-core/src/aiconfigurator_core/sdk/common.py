@@ -833,6 +833,9 @@ ColumnsAFD = [
     "(a)tp",
     "(a)bs",
     "(a)micro_bs",
+    "verification_width",
+    "a_verification_tokens_per_microbatch",
+    "f_verification_tokens_per_microbatch",
     "(a)workers",
     "(a)memory",
     "(a)is_oom",
@@ -868,6 +871,9 @@ ColumnsAFD = [
     "decode_comm_hidden",
     "ttft",
     "tpot",
+    "decode_batch_service_time_ms",
+    "effective_decode_batch_service_time_ms",
+    "expected_output_tokens_per_decode_iteration",
     "request_latency",
     "b_total",
     "b_micro_total",
@@ -883,6 +889,7 @@ ColumnsAFD = [
     "nextn",
     "combined_with_pd",
     "boundary_on_attn",
+    "afd_moe_time_ms",
     # Static prefill pool paired with the AFD pool in combined-with-PD
     # default-mode sweeps; NaN for single-phase AFD-only estimates.
     "(p)workers",
