@@ -1013,6 +1013,8 @@ def sweep_afd(
     decode_degradation: float | None = None,
     ttft_correction_factor: float | None = None,
     decode_latency_correction: float = 1.0,
+    speculative_profile: SpeculativeDecodingProfile | None = None,
+    afd_moe_time_ms: float | None = None,
 ) -> pd.DataFrame:
     """Sweep AFD candidate topologies; return feasible-candidate DataFrame.
 
@@ -1068,5 +1070,7 @@ def sweep_afd(
         decode_degradation=decode_degradation or _AFD_DECODE_DEGRADATION,
         ttft_correction_factor=ttft_correction_factor or _AFD_TTFT_CORRECTION_FACTOR,
         decode_latency_correction=decode_latency_correction,
+        speculative_profile=speculative_profile,
+        afd_moe_time_ms=afd_moe_time_ms,
     )
     return result_df

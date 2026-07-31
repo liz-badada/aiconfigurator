@@ -74,9 +74,11 @@ def test_default_agg_batch_schedule_is_monotonic_and_capped():
 
 def test_sweep_afd_forwards_max_a_batch_size(monkeypatch):
     from aiconfigurator.sdk import pareto_analysis
+    from aiconfigurator.sdk.speculative import SpeculativeDecodingProfile
 
     captured = {}
     expected = object()
+    speculative_profile = SpeculativeDecodingProfile(expected_accepted_tokens=1.25)
 
     def fake_afd_pareto(**kwargs):
         captured.update(kwargs)
@@ -94,10 +96,14 @@ def test_sweep_afd_forwards_max_a_batch_size(monkeypatch):
         gpus_per_node=8,
         combined_with_pd=False,
         max_a_batch_size=1536,
+        speculative_profile=speculative_profile,
+        afd_moe_time_ms=12.5,
     )
 
     assert result is expected
     assert captured["max_a_batch_size"] == 1536
+    assert captured["speculative_profile"] is speculative_profile
+    assert captured["afd_moe_time_ms"] == 12.5
 
 
 # ---------------------------------------------------------------------------

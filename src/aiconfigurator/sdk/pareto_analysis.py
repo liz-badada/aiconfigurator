@@ -23,6 +23,7 @@ from aiconfigurator.sdk.inference_session import (
 )
 from aiconfigurator.sdk.models import check_is_moe, get_model, resolve_context_fmha_by_data
 from aiconfigurator.sdk.perf_database import PerfDatabase
+from aiconfigurator.sdk.speculative import SpeculativeDecodingProfile
 from aiconfigurator.sdk.utils import enumerate_ttft_tpot_constraints, strip_unicode_to_ascii
 
 logger = logging.getLogger(__name__)
@@ -1010,6 +1011,8 @@ def afd_pareto(
     decode_degradation: float = _AFD_DECODE_DEGRADATION,
     ttft_correction_factor: float = _AFD_TTFT_CORRECTION_FACTOR,
     decode_latency_correction: float = 1.0,
+    speculative_profile: SpeculativeDecodingProfile | None = None,
+    afd_moe_time_ms: float | None = None,
 ) -> pd.DataFrame:
     """Sweep AFD candidate topologies and collect per-candidate estimates.
 
@@ -1291,12 +1294,14 @@ def afd_pareto(
                         database=database,
                         backend=backend,
                         afd_config=afd_config,
+                        afd_moe_time_ms=afd_moe_time_ms,
                     )
                     summary = session.run_afd(
                         candidate_runtime_config,
                         phase="decode",
                         free_gpu_memory_fraction=free_gpu_memory_fraction,
                         max_seq_len=max_seq_len,
+                        speculative_profile=speculative_profile,
                     )
                     if summary.check_oom():
                         rejection_counts["oom"] += 1
@@ -1421,12 +1426,14 @@ def afd_pareto(
                             database=database,
                             backend=backend,
                             afd_config=afd_config,
+                            afd_moe_time_ms=afd_moe_time_ms,
                         )
                         summary = session.run_afd(
                             candidate_runtime_config,
                             phase="decode",
                             free_gpu_memory_fraction=free_gpu_memory_fraction,
                             max_seq_len=max_seq_len,
+                            speculative_profile=speculative_profile,
                         )
 
                         if summary.check_oom():

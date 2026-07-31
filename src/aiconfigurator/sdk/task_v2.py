@@ -1989,7 +1989,10 @@ class Task:
             if self._afd_topology_pinned:
                 # Pinned topology: single-point via AFDInferenceSession
                 return self._run_afd_single_point(database)
-            return sweep_afd(**self.sweep_afd_kwargs(database=database))
+            return sweep_afd(
+                **self.sweep_afd_kwargs(database=database),
+                speculative_profile=self.build_speculative_profile(),
+            )
         if self.serving_mode == "disagg":
             prefill_database = self._load_database(
                 self.prefill_system_name, self.prefill_backend_name, self.prefill_backend_version
@@ -2278,6 +2281,7 @@ class Task:
             phase="both",
             free_gpu_memory_fraction=self.free_gpu_memory_fraction,
             max_seq_len=self.max_seq_len,
+            speculative_profile=self.build_speculative_profile(),
         )
         return summary.get_summary_df()
 
