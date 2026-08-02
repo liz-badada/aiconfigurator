@@ -180,6 +180,11 @@ def replay_case(
     if completed.returncode:
         raise RuntimeError(f"Mocker failed for {case_id}:\n{completed.stdout[-8000:]}")
     result = json.loads(report.read_text(encoding="utf-8"))
+    expected_tpot_ms = (
+        float(source["agg"]["effective_tpot_ms"])
+        if topology == "agg"
+        else float(source["effective_tpot_ms"])
+    )
     return {
         "case_id": case_id,
         "model": source["model"],
@@ -201,6 +206,8 @@ def replay_case(
         "duration_ms": result["duration_ms"],
         "output_throughput_tok_s": result["output_throughput_tok_s"],
         "mean_tpot_ms": result["mean_tpot_ms"],
+        "expected_steady_state_tpot_ms": expected_tpot_ms,
+        "mean_tpot_error_pct": (result["mean_tpot_ms"] / expected_tpot_ms - 1.0) * 100.0,
         "p90_tpot_ms": result["p90_tpot_ms"],
         "mean_itl_ms": result["mean_itl_ms"],
         "p90_itl_ms": result["p90_itl_ms"],
