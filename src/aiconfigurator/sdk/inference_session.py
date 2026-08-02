@@ -990,9 +990,16 @@ class AFDInferenceSession:
         for op in ops_iter:
             op_kwargs = kwargs_common
             if not is_context and query_len > 1:
-                from aiconfigurator.sdk.operations import GenerationAttention
+                from aiconfigurator.sdk.operations import (
+                    GenerationAttention,
+                    GenerationDeepSeekV4AttentionModule,
+                    GenerationMSAModule,
+                )
 
-                if isinstance(op, GenerationAttention):
+                if isinstance(
+                    op,
+                    (GenerationAttention, GenerationDeepSeekV4AttentionModule, GenerationMSAModule),
+                ):
                     op_kwargs = dict(kwargs_common)
                     op_kwargs["batch_size"] = sequence_batch_size if sequence_batch_size is not None else batch_size
                     op_kwargs["query_len"] = query_len

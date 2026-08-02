@@ -34,7 +34,7 @@ def test_compile_engine_applies_nextn_compute_cost_only(monkeypatch):
     model = captured["model"]
     assert model._nextn == 1
     assert not hasattr(model, "_nextn_accepted")
-    assert model._mtp_scale_factor == pytest.approx((model._num_layers + 1) / model._num_layers)
+    assert model._mtp_scale_factor == pytest.approx((2 * model._num_layers + 1) / (2 * model._num_layers))
     assert captured["kwargs"]["nextn"] == 1
     assert "nextn_accepted" not in captured["kwargs"]
 

@@ -254,6 +254,34 @@ class TestDeepSeekV4AttentionModule:
 
         assert next_step[1] > current[1]
 
+    def test_generation_verification_reuses_shared_prefix(self, comprehensive_perf_db):
+        from aiconfigurator.sdk.operations.dsv4 import _deepseek_v4_attention_sol
+
+        kwargs = _deepseek_v4_attn_kwargs(4)
+        for key in ("b", "s", "prefix"):
+            kwargs.pop(key)
+        op = ops.GenerationDeepSeekV4AttentionModule("generation_attention", 1.0, **kwargs)
+
+        comprehensive_perf_db.set_default_database_mode(common.DatabaseMode.SOL)
+        try:
+            one_query = float(
+                op.query(comprehensive_perf_db, batch_size=2, beam_width=1, s=8192, query_len=1)
+            )
+            four_queries = float(
+                op.query(comprehensive_perf_db, batch_size=2, beam_width=1, s=8192, query_len=4)
+            )
+            assert 1 < four_queries / one_query < 4.01
+
+            sol_kwargs = _deepseek_v4_attn_kwargs(4)
+            for key in ("b", "s", "prefix", "native_heads", "tp_size"):
+                sol_kwargs.pop(key)
+            sol_kwargs.update(database=comprehensive_perf_db, is_context=False, s=8192, prefix=0)
+            fused_mem = _deepseek_v4_attention_sol(**sol_kwargs, b=2, query_len=4)[2]
+            independent_mem = _deepseek_v4_attention_sol(**sol_kwargs, b=8, query_len=1)[2]
+            assert fused_mem < independent_mem
+        finally:
+            comprehensive_perf_db.set_default_database_mode(common.DatabaseMode.SILICON)
+
     def test_generation_silicon_below_min_sampled_s_total_holds_boundary_util(self, mutable_comprehensive_perf_db):
         """b=1, s_total=1 sits below the min sampled s_total=2: the engine holds
         the boundary util and lets the decode SOL carry the (tiny) difference,

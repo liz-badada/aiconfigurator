@@ -54,6 +54,7 @@ def _msa_attention_sol(
     kvcache_quant_mode: common.KVCacheQuantMode,
     fmha_quant_mode: common.FMHAQuantMode,
     gemm_quant_mode: common.GEMMQuantMode,
+    query_len: int = 1,
 ) -> tuple[float, float, float]:
     """SOL for one MSA block. GQA projections + per-block FP8 indexer + sparse
     attention over the top-k (= index_topk) selected tokens.
@@ -65,7 +66,7 @@ def _msa_attention_sol(
     from aiconfigurator_core.sdk.operations.gemm import GEMM
 
     qk_head_dim = head_dim
-    tokens = b * s if is_context else b
+    tokens = b * s if is_context else b * query_len
     # context: full prefill of `s` new tokens on top of `prefix` cached.
     # generation: 1 query token, kv_len = s - 1 cached.
     full_s = prefix + s if is_context else s
@@ -91,14 +92,24 @@ def _msa_attention_sol(
             pairs = ramp + sat
         score_len = full_s
     else:
-        pairs = tokens * min(kv_len, index_topk)
-        score_len = kv_len
-    effective_kv = min(kv_len, index_topk) if not is_context else min(full_s, index_topk)
+        spans = [kv_len + offset for offset in range(query_len)]
+        pairs = b * sum(min(span, index_topk) for span in spans)
+        score_len = spans[-1]
+    # SOL is a lower bound: a fused verify kernel can reuse the selected KV
+    # working set across adjacent causal queries instead of rereading the
+    # entire prefix for every draft position.
+    effective_kv = min(score_len, index_topk)
     attention_ops = 2 * num_heads * (qk_head_dim + v_head_dim) * pairs  # QK^T + AV
 
     # ── indexer: per-block scoring (block_size tokens per block), FP8 ────
     num_blocks = (score_len + block_size - 1) // block_size if score_len > index_topk else 0
-    indexer_ops = 2 * tokens * index_n_heads * index_head_dim * num_blocks
+    if is_context:
+        indexer_query_blocks = tokens * num_blocks
+    else:
+        indexer_query_blocks = b * sum(
+            (span + block_size - 1) // block_size if span > index_topk else 0 for span in spans
+        )
+    indexer_ops = 2 * indexer_query_blocks * index_n_heads * index_head_dim
 
     # ── memory ───────────────────────────────────────────────────────────
     gemm_weight_bytes = (
@@ -230,7 +241,7 @@ class _BaseMSAModule(Operation):
     def load_data(cls, database):  # no MSA silicon table
         pass
 
-    def _sol(self, database, b, s, prefix, is_context):
+    def _sol(self, database, b, s, prefix, is_context, query_len=1):
         return _msa_attention_sol(
             database,
             is_context=is_context,
@@ -249,6 +260,7 @@ class _BaseMSAModule(Operation):
             kvcache_quant_mode=self._kvcache_quant_mode,
             fmha_quant_mode=self._fmha_quant_mode,
             gemm_quant_mode=self._gemm_quant_mode,
+            query_len=query_len,
         )[0]
 
     def get_weights(self, **kwargs):
@@ -305,8 +317,12 @@ class GenerationMSAModule(_BaseMSAModule):
     def query(self, database, **kwargs):
         b = kwargs.get("batch_size")
         s = kwargs.get("s")
+        query_len = kwargs.get("query_len", 1)
+        if isinstance(query_len, bool) or int(query_len) != query_len or int(query_len) < 1:
+            raise ValueError(f"query_len must be a positive integer, got {query_len!r}")
+        query_len = int(query_len)
         mode = database._default_database_mode
-        sol = self._sol(database, b, s, 0, is_context=False)
+        sol = self._sol(database, b, s, 0, is_context=False, query_len=query_len)
         if mode in (common.DatabaseMode.SOL, common.DatabaseMode.SOL_FULL):
             return PerformanceResult(sol * self._scale_factor, energy=0.0, source="sol")
         if mode == common.DatabaseMode.SILICON:
@@ -334,4 +350,5 @@ class GenerationMSAModule(_BaseMSAModule):
             )
         note_provenance("xop")  # cross-op transfer from DSA
         lat = sol / (util * self._dsa_scale_k)
-        return PerformanceResult(lat * self._scale_factor, energy=0.0, source="empirical")
+        source = "estimated" if query_len > 1 else "empirical"
+        return PerformanceResult(lat * self._scale_factor, energy=0.0, source=source)

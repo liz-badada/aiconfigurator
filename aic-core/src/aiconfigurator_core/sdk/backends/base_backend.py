@@ -381,9 +381,16 @@ class BaseBackend:
                     "gen_seq_imbalance_correction_scale": runtime_config.gen_seq_imbalance_correction_scale,
                 }
                 if verification_width > 1:
-                    from aiconfigurator_core.sdk.operations import GenerationAttention
+                    from aiconfigurator_core.sdk.operations import (
+                        GenerationAttention,
+                        GenerationDeepSeekV4AttentionModule,
+                        GenerationMSAModule,
+                    )
 
-                    if isinstance(op, GenerationAttention):
+                    if isinstance(
+                        op,
+                        (GenerationAttention, GenerationDeepSeekV4AttentionModule, GenerationMSAModule),
+                    ):
                         kwargs["batch_size"] = sequence_batch_size
                         kwargs["query_len"] = verification_width
                 result = op.query(database, **kwargs)

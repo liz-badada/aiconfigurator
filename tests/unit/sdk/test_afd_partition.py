@@ -160,6 +160,34 @@ def test_build_afd_ops_partition_context_path():
     assert _names(partition.skipped_ops) == ["context_p2p"]
 
 
+@pytest.mark.parametrize("phase", ["context", "generation"])
+def test_build_afd_ops_partition_deepseek_v4_mhc_stays_with_attention(phase):
+    model = _Model(
+        **{
+            f"{phase}_ops": [
+                _NamedOp(f"{phase}_mhc_pre"),
+                _NamedOp(f"{phase}_attn_norm"),
+                _NamedOp(f"{phase}_attention"),
+                _NamedOp(f"{phase}_mhc_post"),
+                _NamedOp(f"{phase}_ffn_norm"),
+                _NamedOp(f"{phase}_moe"),
+            ]
+        }
+    )
+
+    partition = build_afd_ops_partition(model, phase=phase)
+
+    assert _names(partition.attn_ops) == [
+        f"{phase}_mhc_pre",
+        f"{phase}_attn_norm",
+        f"{phase}_attention",
+        f"{phase}_mhc_post",
+        f"{phase}_ffn_norm",
+    ]
+    assert _names(partition.ffn_ops) == [f"{phase}_moe"]
+    assert _names(partition.boundary_ops) == [f"{phase}_ffn_norm"]
+
+
 def test_build_afd_ops_partition_boundary_placement_can_be_overridden():
     model = _Model(
         generation_ops=[

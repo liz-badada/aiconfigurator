@@ -131,6 +131,7 @@ def _deepseek_v4_attention_sol(
     kvcache_quant_mode: common.KVCacheQuantMode,
     fmha_quant_mode: common.FMHAQuantMode,
     gemm_quant_mode: common.GEMMQuantMode,
+    query_len: int = 1,
 ) -> tuple[float, float, float]:
     """Shared SOL formula for both context and generation phases.
 
@@ -143,7 +144,7 @@ def _deepseek_v4_attention_sol(
     def _tc_flops(quant_mode):
         return GEMM._get_quant_tc_flops(database.system_spec, quant_mode)
 
-    tokens = b * s if is_context else b
+    tokens = b * s if is_context else b * query_len
     kv_len = prefix + s if is_context else max(0, s - 1)
     local_groups = max(1, o_groups)
 
@@ -173,10 +174,14 @@ def _deepseek_v4_attention_sol(
         else:
             compressed_pairs = 0
     else:
-        window_pairs = b * min(kv_len, window_size)
+        decode_spans = [kv_len + offset for offset in range(query_len)]
+        window_pairs = b * sum(min(span, window_size) for span in decode_spans)
         if compress_ratio:
-            compressed_limit = index_topk if compress_ratio == 4 else max(0, kv_len // compress_ratio)
-            compressed_pairs = b * min(kv_len // compress_ratio, compressed_limit)
+            compressed_pairs = 0
+            for span in decode_spans:
+                compressed_len = span // compress_ratio
+                compressed_limit = index_topk if compress_ratio == 4 else compressed_len
+                compressed_pairs += b * min(compressed_len, compressed_limit)
         else:
             compressed_pairs = 0
 
@@ -190,9 +195,10 @@ def _deepseek_v4_attention_sol(
         compressed_len = kv_len // compress_ratio
         if is_context:
             indexer_query_tokens = b * s
+            indexer_pairs = indexer_query_tokens * compressed_len
         else:
-            indexer_query_tokens = b
-        indexer_pairs = indexer_query_tokens * compressed_len
+            indexer_query_tokens = b * query_len
+            indexer_pairs = b * sum(span // compress_ratio for span in decode_spans)
         indexer_ops = (
             2 * indexer_query_tokens * q_lora_rank * index_n_heads * index_head_dim
             + 2 * indexer_pairs * index_n_heads * index_head_dim
@@ -239,7 +245,20 @@ def _deepseek_v4_attention_sol(
     # since SOL is the per-op roofline lower bound. The corrected formula reads
     # each KV entry once (pairs * head_dim), matching the storage layout and
     # the underlying kernel's MQA broadcast pattern.
-    kv_cache_bytes = attention_pairs * head_dim * kvcache_quant_mode.value.memory
+    if is_context:
+        kv_positions_read = attention_pairs
+    else:
+        last_kv_len = decode_spans[-1]
+        # The roofline lower bound assumes a fused verifier reuses common KV
+        # positions across adjacent queries. CSA selection overlap is unknown,
+        # so the minimum union is the largest per-query selected set.
+        window_union = min(last_kv_len, min(kv_len, window_size) + query_len - 1)
+        compressed_union = 0
+        if compress_ratio:
+            compressed_len = last_kv_len // compress_ratio
+            compressed_union = min(compressed_len, index_topk) if compress_ratio == 4 else compressed_len
+        kv_positions_read = b * (window_union + compressed_union)
+    kv_cache_bytes = kv_positions_read * head_dim * kvcache_quant_mode.value.memory
     rope_bytes = tokens * num_heads * rope_head_dim * fmha_quant_mode.value.memory
 
     sol_math = (
@@ -1387,10 +1406,52 @@ class GenerationDeepSeekV4AttentionModule(_BaseDeepSeekV4AttentionModule):
     # Op contract
     # ------------------------------------------------------------------
 
+    def _verification_roofline_scale(
+        self,
+        database: PerfDatabase,
+        *,
+        batch_size: int,
+        s: int,
+        query_len: int,
+    ) -> float:
+        common_kwargs = {
+            "database": database,
+            "is_context": False,
+            "b": batch_size,
+            "s": s,
+            "prefix": 0,
+            "num_heads": self._num_heads,
+            "hidden_size": self._hidden_size,
+            "q_lora_rank": self._q_lora_rank,
+            "o_lora_rank": self._o_lora_rank,
+            "head_dim": self._head_dim,
+            "rope_head_dim": self._rope_head_dim,
+            "index_n_heads": self._index_n_heads,
+            "index_head_dim": self._index_head_dim,
+            "index_topk": self._index_topk,
+            "window_size": self._window_size,
+            "compress_ratio": self._compress_ratio,
+            "o_groups": self._o_groups,
+            "kvcache_quant_mode": self._kvcache_quant_mode,
+            "fmha_quant_mode": (
+                common.FMHAQuantMode.fp8
+                if self._kvcache_quant_mode == common.KVCacheQuantMode.fp8
+                else common.FMHAQuantMode.bfloat16
+            ),
+            "gemm_quant_mode": self._gemm_quant_mode,
+        }
+        base_sol = _deepseek_v4_attention_sol(**common_kwargs, query_len=1)[0]
+        verification_sol = _deepseek_v4_attention_sol(**common_kwargs, query_len=query_len)[0]
+        return verification_sol / max(base_sol, 1e-12)
+
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         beam_width = kwargs.get("beam_width")
         if beam_width != 1:
             raise ValueError(f"{self.__class__.__name__} only supports beam_width=1, got {beam_width}")
+        query_len = kwargs.get("query_len", 1)
+        if isinstance(query_len, bool) or int(query_len) != query_len or int(query_len) < 1:
+            raise ValueError(f"query_len must be a positive integer, got {query_len!r}")
+        query_len = int(query_len)
         result = database.query_generation_deepseek_v4_attention_module(
             b=kwargs.get("batch_size"),
             s=kwargs.get("s"),
@@ -1412,6 +1473,19 @@ class GenerationDeepSeekV4AttentionModule(_BaseDeepSeekV4AttentionModule):
             fmha_quant_mode=self._fmha_quant_mode,
             gemm_quant_mode=self._gemm_quant_mode,
         )
+        if query_len > 1:
+            scale = self._verification_roofline_scale(
+                database,
+                batch_size=kwargs.get("batch_size"),
+                s=kwargs.get("s"),
+                query_len=query_len,
+            )
+            source = "sol" if getattr(result, "source", "silicon") == "sol" else "estimated"
+            result = PerformanceResult(
+                float(result) * scale,
+                energy=result.energy * scale,
+                source=source,
+            )
         return PerformanceResult(
             float(result) * self._scale_factor,
             energy=result.energy * self._scale_factor,

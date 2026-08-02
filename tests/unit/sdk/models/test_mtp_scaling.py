@@ -36,14 +36,14 @@ class TestMTPScaling:
         """
         Test the mtp_scale_factor helper.
 
-        Formula: (nextn + num_layers) / num_layers
+    Formula: ((nextn + 1) * num_layers + nextn) / ((nextn + 1) * num_layers)
         """
         from aiconfigurator.sdk.models import mtp_scale_factor
 
         assert mtp_scale_factor(0, 64) == 1.0
-        assert mtp_scale_factor(2, 64) == pytest.approx((2 + 64) / 64)
-        assert mtp_scale_factor(1, 64) == pytest.approx((1 + 64) / 64)
-        assert mtp_scale_factor(3, 61) == pytest.approx((3 + 61) / 61)
+        assert mtp_scale_factor(2, 64) == pytest.approx((3 * 64 + 2) / (3 * 64))
+        assert mtp_scale_factor(1, 64) == pytest.approx((2 * 64 + 1) / (2 * 64))
+        assert mtp_scale_factor(3, 61) == pytest.approx((4 * 61 + 3) / (4 * 61))
 
     def test_model_config_contains_compute_side_nextn_only(self):
         """Core model configuration does not carry workload acceptance."""
@@ -59,7 +59,9 @@ class TestMTPScaling:
 
         assert not hasattr(model_config, "nextn_accepted")
         assert not hasattr(model, "_nextn_accepted")
-        assert model._mtp_scale_factor == pytest.approx((2 + model._num_layers) / model._num_layers)
+        assert model._mtp_scale_factor == pytest.approx(
+            (3 * model._num_layers + 2) / (3 * model._num_layers)
+        )
 
     def test_generation_ops_scaled_by_mtp(self):
         """

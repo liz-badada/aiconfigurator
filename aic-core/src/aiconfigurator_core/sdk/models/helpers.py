@@ -531,10 +531,17 @@ def check_is_moe(model_path: str, model_info: dict | None = None) -> bool:
 def mtp_scale_factor(nextn: int, num_layers: int) -> float:
     """Per-iteration compute scale for MTP speculative decoding.
 
-    A decode iteration evaluates ``num_layers + nextn`` layers' worth of work.
-    Accepted-token progress is deliberately excluded: it is a workload-level
-    assumption applied by the upper prediction layer.
+    The runtime widens target verification to ``q = nextn + 1`` tokens. Its
+    full-model work is therefore ``q * num_layers`` layer-tokens. The existing
+    AIC MTP approximation adds one lightweight draft-layer evaluation for each
+    of the ``nextn`` candidates, for a total of ``q * num_layers + nextn``.
+    This function scales the already q-wide operation batch, so the draft work
+    must be divided across q rather than charged once per verified token.
+
+    Accepted-token progress is deliberately excluded; the upper prediction
+    layer applies that workload-level assumption.
     """
     if nextn <= 0:
         return 1.0
-    return (nextn + num_layers) / num_layers
+    verification_width = nextn + 1
+    return (verification_width * num_layers + nextn) / (verification_width * num_layers)

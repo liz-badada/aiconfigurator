@@ -283,6 +283,11 @@ def _is_attention_side_op(name: str) -> bool:
             "q_b_proj",
             "kv_b_proj",
             "downscale_gemm",
+            # DeepSeek-V4 manifold-constrained hyper-connections wrap the
+            # attention block before the A->F boundary.  Both the pre and
+            # post modules consume/produce the attention-side residual state.
+            "_mhc_pre",
+            "_mhc_post",
             "mla",
             "bmm",
             "rope",

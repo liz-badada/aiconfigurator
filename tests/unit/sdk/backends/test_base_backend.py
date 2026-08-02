@@ -9,7 +9,11 @@ import pytest
 from aiconfigurator.sdk import common
 from aiconfigurator.sdk.backends.base_backend import BaseBackend
 from aiconfigurator.sdk.config import ModelConfig, RuntimeConfig
-from aiconfigurator.sdk.operations import GenerationAttention
+from aiconfigurator.sdk.operations import (
+    GenerationAttention,
+    GenerationDeepSeekV4AttentionModule,
+    GenerationMSAModule,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -42,6 +46,26 @@ class _CaptureGenerationAttention(GenerationAttention):
             n_kv=2,
             kv_cache_dtype=common.KVCacheQuantMode.bfloat16,
         )
+        self.calls = []
+
+    def query(self, *args, **kwargs) -> _LatencyResult:
+        self.calls.append(kwargs)
+        return _LatencyResult(2.0, 20.0)
+
+
+class _CaptureGenerationMSA(GenerationMSAModule):
+    def __init__(self) -> None:
+        self._name = "generation_attention"
+        self.calls = []
+
+    def query(self, *args, **kwargs) -> _LatencyResult:
+        self.calls.append(kwargs)
+        return _LatencyResult(2.0, 20.0)
+
+
+class _CaptureGenerationDeepSeekV4Attention(GenerationDeepSeekV4AttentionModule):
+    def __init__(self) -> None:
+        self._name = "generation_attention"
         self.calls = []
 
     def query(self, *args, **kwargs) -> _LatencyResult:
@@ -208,8 +232,17 @@ def test_run_static_can_route_to_rust_engine_step_backend(
     assert summary.get_generation_source_dict() == {"rust_engine_step_generation": "rust"}
 
 
-def test_generation_mtp_keeps_sequence_batch_for_attention(backend: BaseBackend, model, database) -> None:
-    attention = _CaptureGenerationAttention()
+@pytest.mark.parametrize(
+    "attention_cls",
+    [_CaptureGenerationAttention, _CaptureGenerationMSA, _CaptureGenerationDeepSeekV4Attention],
+)
+def test_generation_mtp_keeps_sequence_batch_for_attention(
+    backend: BaseBackend,
+    model,
+    database,
+    attention_cls,
+) -> None:
+    attention = attention_cls()
     dense = _CaptureOp("generation_mlp")
     model._nextn = 3
     model.generation_ops = [attention, dense]
