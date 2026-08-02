@@ -33,7 +33,7 @@ TOTAL_NODES = TOTAL_GPUS // GPUS_PER_NODE
 PIPELINE_MODEL = "conservative"
 A_TPS = (1, 2, 4)
 MICROBATCHES = (1, 2, 4)
-F_NODE_GRID = (1, 2, 3, 4, 6, 8, 9, 12, 14, 16)
+F_NODE_GRID = (1, 2, 4, 8)
 STATIC_WORLDS = (4, 8, 12, 18, 24, 36, 72)
 STATIC_TPS = (1, 2, 4, 8)
 STATIC_BATCH_CAP = 256
@@ -386,12 +386,13 @@ def afd_point(
     a_config.tp_size = a_tp
     a_config.pp_size = 1
     a_config.attention_dp_size = 1
+    # The A pool never executes routed experts. Do not force MegaMoE's EP>1
+    # construction contract onto a_tp=1; keep the A-only model's unused MoE
+    # branch generic and satisfy the ordinary parallel-product invariant.
     if spec.moe_backend == "megamoe":
-        a_config.moe_tp_size = 1
-        a_config.moe_ep_size = a_tp
-    else:
-        a_config.moe_tp_size = a_tp
-        a_config.moe_ep_size = 1
+        a_config.moe_backend = None
+    a_config.moe_tp_size = a_tp
+    a_config.moe_ep_size = 1
 
     f_gpus = f_nodes * GPUS_PER_NODE
     f_config = copy.deepcopy(base_config)
