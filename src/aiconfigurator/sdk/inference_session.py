@@ -972,9 +972,15 @@ class AFDInferenceSession:
         prefix rather than treating them as independent sequences.
         """
         x = batch_size * seq_len if is_context else batch_size
+        moe_ep_size = max(int(getattr(getattr(model, "config", None), "moe_ep_size", 1) or 1), 1)
 
         kwargs_common = {
             "x": x,
+            # AFD presents the F pool with the batch concentrated from all A
+            # workers. Fused EP module tables such as DeepSeek-V4 MegaMoE are
+            # indexed by source tokens resident on one F rank, while ordinary
+            # ops continue to consume the global ``x`` value.
+            "local_rank_x": math.ceil(x / moe_ep_size),
             "batch_size": batch_size,
             "beam_width": 1,
             "s": seq_len,

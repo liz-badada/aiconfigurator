@@ -588,7 +588,7 @@ class TestHFModelSupport:
             workload_distribution="uniform",
         )
 
-        result = op.query(database, x=16)
+        result = op.query(database, x=128, local_rank_x=16)
 
         assert float(result) == 4.0
         assert result.energy == 6.0

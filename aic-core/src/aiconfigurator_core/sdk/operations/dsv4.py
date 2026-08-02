@@ -1679,7 +1679,11 @@ class DeepSeekV4MegaMoEModule(Operation):
         # DSv4 MegaMoE perf rows are indexed by local-rank tokens. Do not
         # multiply by attention_dp_size here; the old decomposed MoE table is
         # indexed differently.
-        x = int(kwargs.get("x"))
+        # ``num_tokens`` in the measured MegaMoE table is the source-token
+        # count on one EP rank. Regular serving already passes a rank-local
+        # batch as ``x``; AFD additionally supplies ``local_rank_x`` because it
+        # concentrates many A-worker batches into one distributed F replica.
+        x = int(kwargs.get("local_rank_x", kwargs.get("x")))
         overwrite_quant_mode = kwargs.get("quant_mode")
         quant_mode = self._quant_mode if overwrite_quant_mode is None else overwrite_quant_mode
 

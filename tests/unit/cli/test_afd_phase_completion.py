@@ -486,6 +486,35 @@ def test_afd_nextn_expands_decode_compute_and_transfer_volume(monkeypatch):
     assert metrics["f_verification_tokens_per_microbatch"] == 48
 
 
+def test_afd_sum_latency_exposes_rank_local_f_batch():
+    captured = {}
+
+    class FakeOp:
+        _name = "generation_megamoe"
+
+        def query(self, _database, **kwargs):
+            captured.update(kwargs)
+            return 1.0
+
+    session = object.__new__(AFDInferenceSession)
+    session._database = object()
+    model = SimpleNamespace(config=SimpleNamespace(moe_ep_size=8))
+
+    total, per_op = session._sum_latency(
+        [FakeOp()],
+        batch_size=33,
+        seq_len=8192,
+        model=model,
+        runtime_config=RuntimeConfig(isl=8191, osl=2),
+        is_context=False,
+    )
+
+    assert total == 1.0
+    assert per_op == {"generation_megamoe": 1.0}
+    assert captured["x"] == 33
+    assert captured["local_rank_x"] == 5
+
+
 @pytest.mark.parametrize("value", [0.0, -1.0, math.inf, math.nan])
 def test_afd_moe_time_must_be_positive_and_finite(value):
     with pytest.raises(ValueError, match="finite and > 0"):
