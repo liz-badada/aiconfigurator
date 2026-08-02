@@ -1725,8 +1725,9 @@ def render_complete_matrix(records: list[dict[str, Any]]) -> str:
         "cross-model study and all MiniMax-M2.5 rows use 72 GPUs.</div>"
         + '<p class="small"><strong>Reading the times.</strong> A and F are full raw-round stage work and are '
         "pipelined, not added. For MTP, raw-round time includes q=N+1 verification work; effective TPOT divides "
-        "that round by expected committed-token progress P. Green rows are public silicon, amber is calibrated, "
-        "pink contains measured kernel/stage input, and violet is projected.</p>"
+        "that round by expected committed-token progress P. On an MTP row, the AGG and AFD throughput columns "
+        "mean AGG+MTP and AGG+AFD+MTP. Green rows are public silicon, amber is calibrated, pink contains measured "
+        "kernel/stage input, and violet is projected.</p>"
         + table(
             [
                 "Model",
