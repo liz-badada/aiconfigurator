@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -728,7 +730,6 @@ def test_sglang_deepseek_v4_pro_moe_workspace_uses_residual_hidden_size(mutable_
     expected_activation_gib = (attention_workspace + moe_scale_workspace) * 1.15 / (1 << 30)
 
     assert memory["activations"] == pytest.approx(expected_activation_gib)
-
     old_moe_scale_workspace = (
         num_tokens
         * attention_width
@@ -741,3 +742,35 @@ def test_sglang_deepseek_v4_pro_moe_workspace_uses_residual_hidden_size(mutable_
     )
     old_activation_gib = (attention_workspace + old_moe_scale_workspace) * 1.15 / (1 << 30)
     assert memory["activations"] < old_activation_gib
+
+
+def test_megamoe_loader_uses_declared_reuse_sources(tmp_path, monkeypatch):
+    from aiconfigurator.sdk.operations import dsv4
+
+    primary = tmp_path / "primary.parquet"
+    donor = tmp_path / "donor.parquet"
+    captured = {}
+    database = SimpleNamespace(
+        systems_root=str(tmp_path),
+        system="gb200",
+        backend="sglang",
+        version="0.5.12",
+        enable_shared_layer=True,
+        system_spec={"data_dir": "data/gb200"},
+        _build_op_sources=Mock(return_value=[(str(primary), None), (str(donor), None)]),
+    )
+
+    monkeypatch.setattr(dsv4, "resolve_op_data_path", lambda *_args: str(primary))
+
+    def fake_load(sources):
+        captured["sources"] = sources
+        return {"loaded": True}
+
+    monkeypatch.setattr(dsv4, "load_dsv4_megamoe_module_data", fake_load)
+    dsv4.DeepSeekV4MegaMoEModule.clear_cache()
+    try:
+        dsv4.DeepSeekV4MegaMoEModule.load_data(database)
+        assert captured["sources"] == [(str(primary), None), (str(donor), None)]
+        assert database._dsv4_megamoe_module_data.loaded
+    finally:
+        dsv4.DeepSeekV4MegaMoEModule.clear_cache()

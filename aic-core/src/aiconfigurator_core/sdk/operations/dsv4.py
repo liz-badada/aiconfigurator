@@ -1571,8 +1571,15 @@ class DeepSeekV4MegaMoEModule(Operation):
             primary_path = resolve_op_data_path(
                 system_data_root, database.backend, database.version, PerfDataFilename.dsv4_megamoe_module.value
             )
+            sources = database._build_op_sources(
+                PerfDataFilename.dsv4_megamoe_module,
+                primary_path,
+                system_data_root,
+            )
             cls._data_cache[key] = LoadedOpData(
-                load_dsv4_megamoe_module_data(primary_path), PerfDataFilename.dsv4_megamoe_module, primary_path
+                load_dsv4_megamoe_module_data(sources),
+                PerfDataFilename.dsv4_megamoe_module,
+                primary_path,
             )
             cls._record_load()
 
@@ -2065,11 +2072,12 @@ def load_dsv4_megamoe_module_data(dsv4_megamoe_module_file):
     if dsv4_megamoe_module_file is None:
         return None
 
-    if isinstance(dsv4_megamoe_module_file, list | tuple):
-        raise TypeError("DSv4 MegaMoE data loader expects a single unified perf file path")
-
-    source_label = os.fspath(dsv4_megamoe_module_file)
-    rows = _read_filtered_rows(source_label)
+    source_label = (
+        os.fspath(dsv4_megamoe_module_file)
+        if isinstance(dsv4_megamoe_module_file, str | os.PathLike)
+        else ", ".join(os.fspath(path) for path, _ in dsv4_megamoe_module_file)
+    )
+    rows = _read_filtered_rows(dsv4_megamoe_module_file)
     if rows is None:
         logger.debug(f"DeepSeek-V4 MegaMoE data file {source_label} not found.")
         return None
