@@ -266,12 +266,8 @@ class TestDeepSeekV4AttentionModule:
 
         comprehensive_perf_db.set_default_database_mode(common.DatabaseMode.SOL)
         try:
-            one_query = float(
-                op.query(comprehensive_perf_db, batch_size=2, beam_width=1, s=8192, query_len=1)
-            )
-            four_queries = float(
-                op.query(comprehensive_perf_db, batch_size=2, beam_width=1, s=8192, query_len=4)
-            )
+            one_query = float(op.query(comprehensive_perf_db, batch_size=2, beam_width=1, s=8192, query_len=1))
+            four_queries = float(op.query(comprehensive_perf_db, batch_size=2, beam_width=1, s=8192, query_len=4))
             assert 1 < four_queries / one_query < 4.01
 
             sol_kwargs = _deepseek_v4_attn_kwargs(4)

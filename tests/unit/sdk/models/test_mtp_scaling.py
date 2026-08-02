@@ -34,9 +34,9 @@ class TestMTPScaling:
 
     def test_mtp_scale_factor_calculation(self):
         """
-        Test the mtp_scale_factor helper.
+            Test the mtp_scale_factor helper.
 
-    Formula: ((nextn + 1) * num_layers + nextn) / ((nextn + 1) * num_layers)
+        Formula: ((nextn + 1) * num_layers + nextn) / ((nextn + 1) * num_layers)
         """
         from aiconfigurator.sdk.models import mtp_scale_factor
 
@@ -59,9 +59,7 @@ class TestMTPScaling:
 
         assert not hasattr(model_config, "nextn_accepted")
         assert not hasattr(model, "_nextn_accepted")
-        assert model._mtp_scale_factor == pytest.approx(
-            (3 * model._num_layers + 2) / (3 * model._num_layers)
-        )
+        assert model._mtp_scale_factor == pytest.approx((3 * model._num_layers + 2) / (3 * model._num_layers))
 
     def test_generation_ops_scaled_by_mtp(self):
         """
