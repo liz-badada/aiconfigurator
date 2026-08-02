@@ -584,6 +584,26 @@ def render_model(
                 "—" if "16k" not in cells else cells["16k"][2],
             ]
         )
+    precision_comment = (
+        "Each bar compares AGG and AFD at the same MoE precision, then independently re-optimizes the A:F "
+        "split, A-TP, batch, and microbatch count. The primary profile follows FP4 first, then FP8, then "
+        "BF16 only when a lower-precision path is unavailable. A measured FP8 stage is kept FP8 rather than "
+        "rescaled or relabeled as FP4. The ratio and absolute AFD throughput answer different questions: a "
+        "lower precision can accelerate both systems yet reduce AFD/AGG when AGG benefits more; use the table's "
+        "tok/s/GPU columns to judge absolute AFD performance."
+    )
+    if model == "qwen3_235b":
+        precision_comment += (
+            " For Qwen, the measured complete-F FP8 profile includes fused dispatch, expert execution, combine, "
+            "and their overlap; it can therefore beat the generic NVFP4 module even though its arithmetic "
+            "precision is higher. That comparison diagnoses the implementation boundary, not an FP8-over-FP4 "
+            "kernel claim."
+        )
+    elif model == "minimax_m3":
+        precision_comment += (
+            " All MiniMax precision profiles are target-shape projections rather than same-shape silicon rows, "
+            "so their ordering is a sensitivity result, not a calibrated kernel ranking."
+        )
     body += figure(
         svg_grouped_bars(
             precision_groups,
@@ -593,7 +613,7 @@ def render_model(
             y_max=2.0,
             value_digits=2,
         ),
-        "Each bar compares AGG and AFD at the same MoE precision, then independently re-optimizes the A:F split, A-TP, batch, and microbatch count. The primary profile follows FP4 first, then FP8, then BF16 only when a lower-precision path is unavailable. A measured FP8 stage is kept FP8 rather than rescaled or relabeled as FP4.",
+        precision_comment,
     )
     body += table(
         [
