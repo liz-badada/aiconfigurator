@@ -40,8 +40,12 @@ STATIC_TPS = (1, 2, 4, 8)
 STATIC_BATCH_CAP = 256
 
 WORKLOADS = {
-    "8k": {"context": 8192, "batch_per_a_gpu": (4, 8, 12, 16, 24, 32, 48, 64, 96)},
-    "16k": {"context": 16384, "batch_per_a_gpu": (2, 4, 6, 8, 12, 16, 24, 32, 48)},
+    "8k": {"context": 8192, "batch_per_a_gpu": (4, 8, 12, 16, 24, 32, 48, 64, 72, 96)},
+    "16k": {"context": 16384, "batch_per_a_gpu": (2, 4, 6, 8, 12, 16, 24, 32, 36, 48)},
+}
+REFERENCE_AGG = {
+    ("minimax_m25", 8192): {"world": 4, "tp": 1, "local_batch": 48},
+    ("minimax_m25", 16384): {"world": 4, "tp": 1, "local_batch": 24},
 }
 
 
@@ -88,6 +92,11 @@ class PrecisionProfile:
     timing_note: str
     primary: bool = False
     measured_complete_f: bool = False
+    measured_microbatches: int | None = None
+    measured_curve_key: str | None = None
+    gemm_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
 
 
 def expected_accepted(nextn: int, conditional_rate: float) -> float:
@@ -158,6 +167,73 @@ MODELS = (
                 "NVIDIA Qwen Eagle3 mean committed output per step 2.28125; E[drafts]=1.28125",
             ),
         ),
+    ),
+    ModelSpec(
+        key="minimax_m25",
+        label="MiniMax-M2.5-FP8",
+        model_path="MiniMaxAI/MiniMax-M2.5",
+        backend_version="0.5.14",
+        moe_backend=None,
+        layers=62,
+        topk=8,
+        parameter_note="about 230B total / about 10B active",
+        attention_note=(
+            "full-context GQA, 48 query heads / 8 KV heads, head_dim=128; "
+            "no sparse, sliding-window, or linear attention"
+        ),
+        attention_timing_note=(
+            "SGLang 0.5.14 full-GQA HYBRID path with the FastAFD runtime contract fixed to BF16 FMHA and KV cache"
+        ),
+        moe_note=(
+            "the reproduction track replaces AIC's generic F estimate with a measured complete MegaMoE F stage; "
+            "the generic AIC FP8 track is retained as a diagnostic control"
+        ),
+        moe_shape_note="hidden=3072, expert_inter=1536, 256 routed experts, top-8, 62 layers",
+        precision_profiles=(
+            PrecisionProfile(
+                key="calibrated_fp8_effective_f",
+                moe_quant_mode="fp8_block",
+                evidence="FastAFD-calibrated effective F / MiniMax-M2.5 FP8",
+                timing_note=(
+                    "effective F latency solved from the published GB200 NVL72 AFD/AGG ratio under the fixed "
+                    "AIC baseline and pipeline equations; this is a calibration target, not an independent "
+                    "F measurement"
+                ),
+                primary=True,
+                measured_complete_f=True,
+                measured_microbatches=2,
+                measured_curve_key="fastafd_calibrated_effective_f",
+                gemm_quant_mode="fp8_block",
+                kvcache_quant_mode="bfloat16",
+                fmha_quant_mode="bfloat16",
+            ),
+            PrecisionProfile(
+                key="measured_fp8_complete_f",
+                moe_quant_mode="fp8_block",
+                evidence="measured complete-F overlay / MiniMax-M2.5 FP8",
+                timing_note=(
+                    "B200 real-kernel MegaMoE complete F stage at the exact 17A:1F load; fused dispatch, "
+                    "persistent FP8 experts, and combine are timed together"
+                ),
+                measured_complete_f=True,
+                measured_microbatches=2,
+                measured_curve_key="b200_nvl8_measured_f",
+                gemm_quant_mode="fp8_block",
+                kvcache_quant_mode="bfloat16",
+                fmha_quant_mode="bfloat16",
+            ),
+            PrecisionProfile(
+                key="generic_fp8",
+                moe_quant_mode="fp8_block",
+                evidence="native AIC / generic MiniMax-M2.5 FP8",
+                timing_note="AIC HYBRID generic FP8 MoE path; shown only to isolate the F-stage modeling gap",
+                gemm_quant_mode="fp8_block",
+                kvcache_quant_mode="bfloat16",
+                fmha_quant_mode="bfloat16",
+            ),
+        ),
+        scenarios=(NO_MTP,),
+        f_node_grid=(1,),
     ),
     ModelSpec(
         key="minimax_m3",
@@ -307,15 +383,18 @@ def git_value(*args: str) -> str:
     return subprocess.check_output(("git", *args), text=True).strip()
 
 
-def load_measured_f(path: Path | None) -> dict[int, list[tuple[float, float]]]:
-    curves: dict[int, list[tuple[float, float]]] = defaultdict(list)
+def load_measured_f(path: Path | None) -> dict[tuple[str, str, int], list[tuple[float, float]]]:
+    curves: dict[tuple[str, str, int], list[tuple[float, float]]] = defaultdict(list)
     if path is None:
         return {}
     with path.open(newline="", encoding="utf-8") as stream:
         for row in csv.DictReader(stream):
-            if row.get("implementation") != "MegaMoE":
+            curve_key = row.get("curve_key")
+            if not curve_key and row.get("implementation") != "MegaMoE":
                 continue
-            curves[int(row["context_tokens"])].append(
+            model_key = row.get("model_key") or "qwen3_235b"
+            curve_key = curve_key or "measured_fp8_complete_f"
+            curves[(model_key, curve_key, int(row["context_tokens"]))].append(
                 (float(row["assignments_per_f_gpu_per_microbatch"]), float(row["complete_stage_mean_ms"]))
             )
     return {context: sorted(set(values)) for context, values in curves.items()}
@@ -386,7 +465,16 @@ def task_for(model_key: str, context: int, scenario_name: str, precision_key: st
         nextn=scenario.nextn,
         nextn_accepted=scenario.accepted_drafts,
         moe_backend=spec.moe_backend,
+        gemm_quant_mode=(
+            common.GEMMQuantMode[precision.gemm_quant_mode] if precision.gemm_quant_mode is not None else None
+        ),
         moe_quant_mode=common.MoEQuantMode[precision.moe_quant_mode],
+        kvcache_quant_mode=(
+            common.KVCacheQuantMode[precision.kvcache_quant_mode] if precision.kvcache_quant_mode is not None else None
+        ),
+        fmha_quant_mode=(
+            common.FMHAQuantMode[precision.fmha_quant_mode] if precision.fmha_quant_mode is not None else None
+        ),
     )
 
 
@@ -526,6 +614,43 @@ def static_cluster(
     return max(candidates, key=lambda row: row["cluster_output_tokens_s_gpu"])
 
 
+def baseline_cluster(
+    model_key: str,
+    context: int,
+    scenario_name: str,
+    precision_key: str,
+    offered_requests: int,
+) -> dict[str, Any]:
+    contract = REFERENCE_AGG.get((model_key, context))
+    if contract is None:
+        return static_cluster(model_key, context, scenario_name, precision_key, offered_requests)
+    point = static_point(
+        model_key,
+        context,
+        scenario_name,
+        precision_key,
+        contract["world"],
+        contract["tp"],
+        contract["local_batch"],
+    )
+    if point["oom"]:
+        raise RuntimeError(f"reference AGG contract is OOM: {model_key}/{context}")
+    replicas = TOTAL_GPUS // contract["world"]
+    active_requests = replicas * point["global_batch"]
+    cluster_output_tokens_s = replicas * point["output_tokens_s_replica"]
+    return {
+        **point,
+        "replicas": replicas,
+        "offered_requests": active_requests,
+        "active_requests": active_requests,
+        "queued_requests": 0,
+        "capacity_local_batch": contract["local_batch"],
+        "cluster_output_tokens_s": cluster_output_tokens_s,
+        "cluster_output_tokens_s_gpu": cluster_output_tokens_s / TOTAL_GPUS,
+        "contract": "published fixed AGG layout and batch",
+    }
+
+
 def afd_point(
     spec: ModelSpec,
     scenario: Scenario,
@@ -604,7 +729,7 @@ def afd_point(
     }
     raw_round_ms = float(raw["decode_batch_service_time_ms"])
     manual_throughput = global_requests * scenario.progress * 1000.0 / raw_round_ms
-    baseline = static_cluster(spec.key, context, scenario.name, precision.key, global_requests)
+    baseline = baseline_cluster(spec.key, context, scenario.name, precision.key, global_requests)
     modules = (
         operation_rows("A", a_ops, microbatches)
         + operation_rows("F", f_ops, microbatches)
@@ -693,6 +818,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                                     measured_note = ""
                                     assignments = None
                                     if precision.measured_complete_f:
+                                        if microbatches != precision.measured_microbatches:
+                                            continue
                                         global_requests = a_nodes * GPUS_PER_NODE * int(batch_per_a_gpu)
                                         layer_token_factor = scenario.q + scenario.nextn / spec.layers
                                         assignments = (
@@ -702,7 +829,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                                             / (microbatches * f_nodes * GPUS_PER_NODE)
                                         )
                                         measured_ms, measured_note = interpolate_inside(
-                                            measured_curves.get(context, []), assignments
+                                            measured_curves.get(
+                                                (spec.key, precision.measured_curve_key or precision.key, context), []
+                                            ),
+                                            assignments,
                                         )
                                         if measured_ms is None:
                                             continue
@@ -765,6 +895,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "f_node_grid": list(F_NODE_GRID),
             "static_world_grid": list(STATIC_WORLDS),
             "static_tp_grid": list(STATIC_TPS),
+            "fixed_reference_agg": {
+                f"{model_key}:{context}": contract for (model_key, context), contract in REFERENCE_AGG.items()
+            },
             "batch_semantics": "batch_per_a_gpu; a_batch_size=batch_per_a_gpu*a_tp",
             "mtp_compute": "q=nextn+1 target tokens plus nextn draft-layer equivalents: q*L+nextn",
             "mtp_progress": "1+expected accepted draft tokens",
@@ -789,8 +922,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "path": str(args.measured_f_csv) if args.measured_f_csv else None,
             "rule": "interpolate only inside measured assignment range; never extrapolate",
             "curves": {
-                str(context): [{"assignments": x, "latency_ms": y} for x, y in values]
-                for context, values in measured_curves.items()
+                f"{model_key}:{curve_key}:{context}": [{"assignments": x, "latency_ms": y} for x, y in values]
+                for (model_key, curve_key, context), values in measured_curves.items()
             },
         },
         "agg_source_counts": dict(source_counts),

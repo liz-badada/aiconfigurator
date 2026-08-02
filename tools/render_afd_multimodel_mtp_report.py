@@ -15,6 +15,7 @@ from typing import Any
 TOTAL_GPUS = 72
 CONTEXTS = ("8k", "16k")
 MODEL_ORDER = ("qwen3_235b", "minimax_m3", "deepseek_v4_flash", "deepseek_v4_pro")
+ALL_MODEL_LINK_ORDER = ("minimax_m25",) + MODEL_ORDER
 HEADLINE_SCENARIO = {
     "qwen3_235b": "eagle3_n3",
     "minimax_m3": "mtp_n1_r70",
@@ -22,12 +23,14 @@ HEADLINE_SCENARIO = {
     "deepseek_v4_pro": "mtp_n2_r70",
 }
 MODEL_LABELS = {
+    "minimax_m25": "MiniMax-M2.5-FP8",
     "qwen3_235b": "Qwen3-235B-A22B",
     "minimax_m3": "MiniMax-M3",
     "deepseek_v4_flash": "DeepSeek-V4-Flash",
     "deepseek_v4_pro": "DeepSeek-V4-Pro",
 }
 MODEL_LINKS = {
+    "minimax_m25": "https://huggingface.co/MiniMaxAI/MiniMax-M2.5",
     "qwen3_235b": "https://huggingface.co/Qwen/Qwen3-235B-A22B-FP8",
     "minimax_m3": "https://huggingface.co/MiniMaxAI/MiniMax-M3",
     "deepseek_v4_flash": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash",
@@ -55,6 +58,36 @@ COLORS = {
     "F collective": "#CC79A7",
     "A combine": "#E69F00",
     "A-F transfer": "#000000",
+    "FastAFD silicon": "#009E73",
+    "AIC calibrated F": "#E69F00",
+    "NVL8 measured F": "#CC79A7",
+    "FastAFD-required F": "#E69F00",
+    "Generic AIC": "#0072B2",
+    "AIC baseline": "#56B4E9",
+    "A-side work": "#0072B2",
+    "F-side work": "#D55E00",
+    "E2E service": "#000000",
+}
+
+MINIMAX_M25_REFERENCE = {
+    "8k": {
+        "baseline_tps_gpu": 1516.0,
+        "afd_tps_gpu": 2198.0,
+        "speedup": 1.45,
+        "baseline_step_ms": 31.662269,
+        "afd_step_ms": 30.937216,
+        "baseline_batch_gpu": 48,
+        "afd_batch_a_gpu": 72,
+    },
+    "16k": {
+        "baseline_tps_gpu": 745.0,
+        "afd_tps_gpu": 1006.0,
+        "speedup": 1.35,
+        "baseline_step_ms": 32.214765,
+        "afd_step_ms": 33.797217,
+        "baseline_batch_gpu": 24,
+        "afd_batch_a_gpu": 36,
+    },
 }
 
 CSS = """
@@ -502,7 +535,7 @@ def render_model(
     evidence_title, evidence_text = evidence_note(model)
     nav = (
         '<div class="nav"><a href="index.html">Cross-model summary</a>'
-        + "".join(f'<a href="{esc(key)}.html">{esc(MODEL_LABELS[key])}</a>' for key in MODEL_ORDER)
+        + "".join(f'<a href="{esc(key)}.html">{esc(MODEL_LABELS[key])}</a>' for key in ALL_MODEL_LINK_ORDER)
         + "</div>"
     )
 
@@ -1039,6 +1072,424 @@ def render_model(
     return document(title, subtitle, body), summary
 
 
+def minimax_m25_rows(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    contracts = {
+        "8k": {"a_nodes": 17, "f_nodes": 1, "a_tp": 1, "batch_per_a_gpu": 72, "microbatches": 2},
+        "16k": {"a_nodes": 17, "f_nodes": 1, "a_tp": 1, "batch_per_a_gpu": 36, "microbatches": 2},
+    }
+    selected: dict[str, dict[str, Any]] = {}
+    for workload, contract in contracts.items():
+        calibrated = [
+            row
+            for row in payload["rows"]
+            if row["model"] == "minimax_m25"
+            and row["workload"] == workload
+            and row["scenario"] == "no_mtp"
+            and row["precision_profile"] == "calibrated_fp8_effective_f"
+            and all(row[key] == value for key, value in contract.items())
+        ]
+        measured = [
+            row
+            for row in payload["rows"]
+            if row["model"] == "minimax_m25"
+            and row["workload"] == workload
+            and row["scenario"] == "no_mtp"
+            and row["precision_profile"] == "measured_fp8_complete_f"
+            and all(row[key] == value for key, value in contract.items())
+        ]
+        generic = [
+            row
+            for row in payload["rows"]
+            if row["model"] == "minimax_m25"
+            and row["workload"] == workload
+            and row["scenario"] == "no_mtp"
+            and row["precision_profile"] == "generic_fp8"
+            and all(row[key] == value for key, value in contract.items())
+        ]
+        if len(calibrated) != 1 or len(measured) != 1 or len(generic) != 1:
+            raise ValueError(
+                f"expected one calibrated, measured, and generic MiniMax-M2.5 row for {workload}, "
+                f"got calibrated={len(calibrated)}, measured={len(measured)}, generic={len(generic)}"
+            )
+        selected[workload] = {"calibrated": calibrated[0], "measured": measured[0], "generic": generic[0]}
+    return selected
+
+
+def render_minimax_m25(
+    payload: dict[str, Any],
+    mocker: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    selected = minimax_m25_rows(payload)
+    model_meta = next(value for value in payload["models"] if value["key"] == "minimax_m25")
+    model_code = next(
+        (
+            overlay["code"]
+            for overlay in payload.get("applied_overlays", [])
+            if "minimax_m25" in overlay.get("models", [])
+        ),
+        payload["code"],
+    )
+    nav = (
+        '<div class="nav"><a href="index.html">Cross-model summary</a>'
+        + "".join(f'<a href="{esc(model)}.html">{esc(MODEL_LABELS[model])}</a>' for model in ALL_MODEL_LINK_ORDER)
+        + "</div>"
+    )
+    ratio_groups = []
+    timing_groups = []
+    diagnostic_groups = []
+    result_rows = []
+    module_rows = []
+    ratio_errors = []
+    independent_ratio_errors = []
+    formula_rows = []
+    for workload in CONTEXTS:
+        reference = MINIMAX_M25_REFERENCE[workload]
+        calibrated = selected[workload]["calibrated"]
+        measured = selected[workload]["measured"]
+        generic = selected[workload]["generic"]
+        calibrated_ratio = float(calibrated["afd_over_agg"])
+        measured_ratio = float(measured["afd_over_agg"])
+        generic_ratio = float(generic["afd_over_agg"])
+        ratio_error = (calibrated_ratio / reference["speedup"] - 1.0) * 100.0
+        independent_ratio_error = (measured_ratio / reference["speedup"] - 1.0) * 100.0
+        ratio_errors.append(abs(ratio_error))
+        independent_ratio_errors.append(abs(independent_ratio_error))
+        ratio_groups.append(
+            (
+                workload.upper(),
+                {
+                    "FastAFD silicon": reference["speedup"],
+                    "AIC calibrated F": calibrated_ratio,
+                    "NVL8 measured F": measured_ratio,
+                    "Generic AIC": generic_ratio,
+                },
+            )
+        )
+        timing_groups.append(
+            (
+                workload.upper(),
+                {
+                    "AIC baseline": float(calibrated["agg"]["raw_round_ms"]),
+                    "A-side work": float(calibrated["a_full_work_ms"]),
+                    "F-side work": float(calibrated["f_full_work_ms"]),
+                    "E2E service": float(calibrated["raw_round_ms"]),
+                },
+            )
+        )
+        diagnostic_groups.append(
+            (
+                workload.upper(),
+                {
+                    "NVL8 measured F": float(measured["f_full_work_ms"]),
+                    "FastAFD-required F": float(calibrated["f_full_work_ms"]),
+                    "Generic AIC": float(generic["f_full_work_ms"]),
+                },
+            )
+        )
+        result_rows.append(
+            [
+                workload.upper(),
+                fmt(reference["speedup"], 3) + "×",
+                fmt(calibrated_ratio, 3) + "×",
+                f'<span class="{"good" if abs(ratio_error) <= 5 else "bad"}">{ratio_error:+.2f}%</span>',
+                fmt(measured_ratio, 3) + "×",
+                f'<span class="{"good" if abs(independent_ratio_error) <= 5 else "bad"}">{independent_ratio_error:+.2f}%</span>',
+                fmt(generic_ratio, 3) + "×",
+                fmt(reference["baseline_step_ms"], 3),
+                fmt(calibrated["agg"]["raw_round_ms"], 3),
+                fmt(reference["afd_step_ms"], 3),
+                fmt(calibrated["raw_round_ms"], 3),
+            ]
+        )
+        baseline_batch = float(reference["baseline_batch_gpu"])
+        afd_batch_cluster = float(calibrated["global_requests"])
+        aic_baseline_tps = baseline_batch * 1000.0 / float(calibrated["agg"]["raw_round_ms"])
+        aic_afd_tps = afd_batch_cluster * 1000.0 / (TOTAL_GPUS * float(calibrated["raw_round_ms"]))
+        formula_rows.append(
+            [
+                workload.upper(),
+                f"{int(baseline_batch)} × 1000 / {float(calibrated['agg']['raw_round_ms']):.3f}",
+                fmt(aic_baseline_tps, 2),
+                f"{int(afd_batch_cluster)} × 1000 / (72 × {float(calibrated['raw_round_ms']):.3f})",
+                fmt(aic_afd_tps, 2),
+                f"{aic_afd_tps:.2f} / {aic_baseline_tps:.2f} = {calibrated_ratio:.3f}×",
+            ]
+        )
+        module_rows.append(
+            [
+                workload.upper(),
+                fmt(calibrated["a_full_work_ms"], 3),
+                fmt(measured["f_full_work_ms"], 3),
+                fmt(calibrated["f_full_work_ms"], 3),
+                fmt(calibrated["raw_round_ms"], 3),
+                esc(calibrated["pipeline_bottleneck"]),
+                fmt(generic["f_full_work_ms"], 3),
+                fmt(float(calibrated["f_full_work_ms"]) / float(measured["f_full_work_ms"]), 2) + "×",
+                fmt(float(generic["f_full_work_ms"]) / float(calibrated["f_full_work_ms"]), 2) + "×",
+            ]
+        )
+
+    reproduced = max(ratio_errors) <= 5.0
+    independently_reproduced = max(independent_ratio_errors) <= 5.0
+    body = nav
+    body += (
+        f'<div class="callout {"ok" if reproduced else "warn"}"><strong>Result.</strong> '
+        f"The FastAFD-calibrated AIC track reproduces the published ratios with a maximum numerical error of "
+        f"{max(ratio_errors):.3f}%, by construction. The independent B200 NVL8 load-preserving measurement "
+        f"{'also passes' if independently_reproduced else 'does not pass'} the 5% test: its maximum ratio error is "
+        f"{max(independent_ratio_errors):.2f}%. It preserves MoE work and kernel tiling, but not the 68-source "
+        "NVL72 fan-in. The report keeps calibrated, measured-surrogate, and generic-AIC tracks separate.</div>"
+    )
+    body += "<h2>1. Exact workload contract</h2>"
+    body += table(
+        ["Parameter", "8K", "16K"],
+        [
+            ["Model", "MiniMax-M2.5 FP8", "MiniMax-M2.5 FP8"],
+            ["Attention", "Full GQA, 48Q/8KV, BF16 KV", "Full GQA, 48Q/8KV, BF16 KV"],
+            ["F-side experts", "FP8, H=3072, I=1536, 256 experts, top-8", "FP8, H=3072, I=1536, 256 experts, top-8"],
+            ["Cluster", "72 GPUs = 68A + 4F", "72 GPUs = 68A + 4F"],
+            ["A tensor parallel", "1", "1"],
+            ["Batch / A GPU", "72", "36"],
+            ["Global AFD concurrency", "4,896", "2,448"],
+            ["Microbatches", "2", "2"],
+            ["Assignments / F GPU / lane", "4,896", "2,448"],
+            ["Published AGG batch / GPU", "48", "24"],
+        ],
+    )
+    body += (
+        '<div class="callout"><strong>Quantization is explicit.</strong> Dense GEMM and routed experts use '
+        "FP8 block quantization; FMHA and KV cache use BF16. AIC's model ID is "
+        '<span class="mono">MiniMaxAI/MiniMax-M2.5</span>; the checkpoint itself carries the FP8 contract.</div>'
+    )
+
+    body += "<h2>2. Published speedup versus reproduced speedup</h2>"
+    body += figure(
+        svg_grouped_bars(
+            ratio_groups,
+            ["FastAFD silicon", "AIC calibrated F", "NVL8 measured F", "Generic AIC"],
+            y_label="AFD throughput / AGG throughput (×)",
+            x_label="Input context; all bars use the same 0–1.8× axis",
+            y_max=1.8,
+            value_digits=3,
+        ),
+        "Green is the published GB200 NVL72 result. Orange uses the effective F time solved from that result and therefore validates AIC's downstream service and throughput arithmetic, not an independent kernel prediction. Purple uses the real B200 NVL8 reduced-topology MegaMoE stage and is an independent compute/load check, but it lacks 68-source fan-in. Blue is unchanged generic AIC.",
+    )
+    body += table(
+        [
+            "ISL",
+            "FastAFD AFD/AGG",
+            "AIC calibrated",
+            "Calibrated error",
+            "NVL8 measured",
+            "Independent error",
+            "Generic AIC",
+            "Fast AGG step (ms)",
+            "AIC AGG step (ms)",
+            "Fast AFD E2E (ms)",
+            "AIC AFD service (ms)",
+        ],
+        result_rows,
+    )
+    body += table(
+        ["ISL", "AGG tok/s/GPU formula", "AGG tok/s/GPU", "AFD tok/s/GPU formula", "AFD tok/s/GPU", "Final ratio"],
+        formula_rows,
+    )
+
+    body += "<h2>3. From modules to end-to-end service</h2>"
+    body += figure(
+        svg_grouped_bars(
+            timing_groups,
+            ["AIC baseline", "A-side work", "F-side work", "E2E service"],
+            y_label="Milliseconds per decode step",
+            x_label="Input context; identical time axis",
+            value_digits=2,
+        ),
+        "A-side work and the calibrated effective F-side work are full-stage totals, not values to add. AFD pipelines them; the slower side sets the steady-state cadence, while AIC's conservative pipeline model produces E2E service. The AGG baseline is fixed to the published 4-GPU EP4 layout and batch, not re-optimized at a different concurrency.",
+    )
+    body += table(
+        [
+            "ISL",
+            "A work (ms)",
+            "NVL8 measured F (ms)",
+            "FastAFD-required F (ms)",
+            "AFD service (ms)",
+            "Bottleneck",
+            "Generic F (ms)",
+            "Required/measured",
+            "Generic/required",
+        ],
+        module_rows,
+    )
+
+    body += "<h2>4. Why the generic AIC result misses</h2>"
+    body += figure(
+        svg_grouped_bars(
+            diagnostic_groups,
+            ["NVL8 measured F", "FastAFD-required F", "Generic AIC"],
+            y_label="Complete F-stage time (ms / decode step)",
+            x_label="Input context; same model/workload, different F timing evidence",
+            value_digits=2,
+        ),
+        "The public-result-required F time lies between the two available estimates. Generic AIC is too slow and predicts a loss; the 3A+4F NVL8 surrogate is too fast because it removes most of the 68-source fan-in. Attention, batch, A:F split, TP, precision, and pipeline equations are identical, so this bracket isolates the unresolved term to the effective F/communication boundary. Assigning the whole gap to NVLink is still an inference until a topology-exact NVL72 trace is available.",
+    )
+
+    body += "<h2>5. Real-kernel measurement boundary</h2>"
+    measured_rows = [selected[workload]["measured"] for workload in CONTEXTS]
+    calibrated_rows = [selected[workload]["calibrated"] for workload in CONTEXTS]
+    body += table(
+        ["Item", "Value"],
+        [
+            ["Measured hardware", "One B200 NVL8 node, seven active ranks (3 measured A + 4 F)"],
+            [
+                "Load preservation",
+                "Exact assignments per F GPU and lane; 816/408 tokens per measured A rank for 8K/16K",
+            ],
+            [
+                "Kernel tiling hint",
+                "Preserve production 24 × 68 A ranks as 544 × 3 measured A ranks; expected-row product is unchanged",
+            ],
+            ["Timed boundary", "62 layers × 2 lanes: fused quant/dispatch + persistent FP8 experts + combine"],
+            [
+                "Routing input",
+                "Deterministic balanced top-8 routes; exact total F load, without live-request expert skew",
+            ],
+            ["8K measured F", fmt(measured_rows[0]["measured_f_ms"], 3) + " ms"],
+            ["16K measured F", fmt(measured_rows[1]["measured_f_ms"], 3) + " ms"],
+            [
+                "8K FastAFD-required effective F",
+                f"{fmt(calibrated_rows[0]['measured_f_ms'], 3)} ms; "
+                f"{fmt(float(calibrated_rows[0]['measured_f_ms']) - float(measured_rows[0]['measured_f_ms']), 3)} ms above NVL8",
+            ],
+            [
+                "16K FastAFD-required effective F",
+                f"{fmt(calibrated_rows[1]['measured_f_ms'], 3)} ms; "
+                f"{fmt(float(calibrated_rows[1]['measured_f_ms']) - float(measured_rows[1]['measured_f_ms']), 3)} ms above NVL8",
+            ],
+            [
+                "Topology limitation",
+                "F load and kernel tiling are preserved, but sender count is not a topology-exact NVL72 measurement",
+            ],
+            ["Published reference", '<a href="https://haoailab.com/blogs/fastafd/">FastAFD GB200 NVL72 results</a>'],
+        ],
+    )
+
+    body += "<h2>6. Dynamo Mocker replay</h2>"
+    mock_rows = [row for row in mocker["results"] if row["model"] == "minimax_m25"]
+    body += table(
+        ["ISL", "Topology", "AIC TPOT (ms)", "Mocker mean TPOT (ms)", "Error (%)", "Completed requests"],
+        [
+            [
+                row["workload"].upper(),
+                row["topology"].upper(),
+                fmt(row["expected_steady_state_tpot_ms"], 6),
+                fmt(row["mean_tpot_ms"], 6),
+                f"{row['mean_tpot_error_pct']:+.6f}",
+                str(row["completed_requests"]),
+            ]
+            for row in sorted(mock_rows, key=lambda value: (value["workload"], value["topology"]))
+        ],
+    )
+    body += (
+        '<div class="callout"><strong>Interpretation.</strong> Mocker consumes the fixed calibrated AIC service '
+        "profiles and validates worker routing, request lifecycle, and token accounting. It does not re-estimate "
+        "attention or MoE, so this checks orchestration arithmetic only; it is neither an independent FastAFD "
+        "reproduction nor a second kernel measurement.</div>"
+    )
+
+    body += "<h2>7. Reproduction identity and claim boundary</h2>"
+    body += table(
+        ["Layer", "Identity / claim"],
+        [
+            ["AIC", f"branch={esc(model_code['branch'])}; commit={esc(model_code['commit'])}"],
+            ["Dynamo", f"branch={esc(mocker['dynamo_branch'])}; commit={esc(mocker['dynamo_commit'])}"],
+            ["AIC model support", esc(model_meta["attention_note"] + "; " + model_meta["moe_shape_note"])],
+            [
+                "Calibrated reproduction",
+                "Published AFD/AGG ratio after solving the AIC-equivalent F time under the locked FP8/BF16, 17A:1F, batch, and MB=2 contract",
+            ],
+            [
+                "Independent check",
+                f"B200 NVL8 load/tiling-preserving MegaMoE; {'passes' if independently_reproduced else 'does not pass'} the 5% ratio criterion",
+            ],
+            [
+                "Not claimed",
+                "An independent topology-exact NVL72 E2E rerun or proof that the entire calibrated-minus-NVL8 gap is fabric fan-in",
+            ],
+        ],
+    )
+    summary = {
+        "model": "minimax_m25",
+        "label": MODEL_LABELS["minimax_m25"],
+        "aic_code": model_code,
+        "calibrated_reproduced_within_5pct": reproduced,
+        "independent_nvl8_reproduced_within_5pct": independently_reproduced,
+        "max_abs_calibrated_speedup_error_pct": max(ratio_errors),
+        "max_abs_independent_speedup_error_pct": max(independent_ratio_errors),
+        "results": {
+            workload: {
+                "fastafd": MINIMAX_M25_REFERENCE[workload],
+                "aic_calibrated_f": selected[workload]["calibrated"],
+                "aic_measured_f": selected[workload]["measured"],
+                "aic_generic": selected[workload]["generic"],
+            }
+            for workload in CONTEXTS
+        },
+    }
+    return document(
+        "MiniMax-M2.5-FP8: FastAFD AFD Reproduction Audit",
+        "GB200 NVL72 calibrated target, B200 NVL8 measured F bracket, generic AIC control, and Dynamo Mocker replay",
+        body,
+    ), summary
+
+
+def minimax_m25_index_section(payload: dict[str, Any]) -> str:
+    selected = minimax_m25_rows(payload)
+    groups = []
+    rows = []
+    for workload in CONTEXTS:
+        reference = MINIMAX_M25_REFERENCE[workload]
+        calibrated = selected[workload]["calibrated"]
+        measured = selected[workload]["measured"]
+        generic = selected[workload]["generic"]
+        groups.append(
+            (
+                workload.upper(),
+                {
+                    "FastAFD silicon": reference["speedup"],
+                    "AIC calibrated F": calibrated["afd_over_agg"],
+                    "NVL8 measured F": measured["afd_over_agg"],
+                    "Generic AIC": generic["afd_over_agg"],
+                },
+            )
+        )
+        rows.append(
+            [
+                workload.upper(),
+                fmt(reference["speedup"], 3) + "×",
+                fmt(calibrated["afd_over_agg"], 3) + "×",
+                fmt(measured["afd_over_agg"], 3) + "×",
+                fmt(generic["afd_over_agg"], 3) + "×",
+                f"17A:1F / TP1 / b{reference['afd_batch_a_gpu']} / MB2",
+            ]
+        )
+    return (
+        "<h2>MiniMax-M2.5-FP8 FastAFD reproduction</h2>"
+        + figure(
+            svg_grouped_bars(
+                groups,
+                ["FastAFD silicon", "AIC calibrated F", "NVL8 measured F", "Generic AIC"],
+                y_label="AFD throughput / AGG throughput (×)",
+                x_label="Input context; common 0–1.8× scale",
+                y_max=1.8,
+                value_digits=3,
+            ),
+            "This locked no-MTP case is separate from the four-way MTP study below. The calibrated track reproduces FastAFD by solving the effective F time; the NVL8 track independently checks MegaMoE compute/load but lacks NVL72 sender fan-in; the generic track exposes AIC's current F-stage overestimate.",
+        )
+        + table(["ISL", "FastAFD", "AIC calibrated", "NVL8 measured", "Generic AIC", "Contract"], rows)
+        + '<p><a href="minimax_m25.html">Open the MiniMax-M2.5 module-by-module reproduction report →</a></p>'
+    )
+
+
 def render_index(
     payload: dict[str, Any],
     selected: dict[str, dict[str, dict[str, dict[str, Any]]]],
@@ -1046,7 +1497,7 @@ def render_index(
 ) -> str:
     nav = (
         '<div class="nav"><span class="pill">Cross-model summary</span>'
-        + "".join(f'<a href="{esc(model)}.html">{esc(MODEL_LABELS[model])}</a>' for model in MODEL_ORDER)
+        + "".join(f'<a href="{esc(model)}.html">{esc(MODEL_LABELS[model])}</a>' for model in ALL_MODEL_LINK_ORDER)
         + "</div>"
     )
     body = nav
@@ -1057,6 +1508,8 @@ def render_index(
         "policy is FP4 first, then FP8, then BF16; a lower-precision result is never compared against a "
         "higher-precision baseline.</div>"
     )
+    if any(model["key"] == "minimax_m25" for model in payload.get("models", [])):
+        body += minimax_m25_index_section(payload)
     body += "<h2>1. Cross-model AFD result</h2>"
     ratio_groups = []
     speedup_groups = []
@@ -1233,7 +1686,7 @@ def render_index(
     )
     return document(
         "GB200 NVL72 Multi-Model AFD × MTP Simulation",
-        "Qwen3-235B, MiniMax-M3, DeepSeek-V4-Flash, and DeepSeek-V4-Pro",
+        "MiniMax-M2.5 FastAFD reproduction plus Qwen3-235B, MiniMax-M3, and DeepSeek-V4 AFD × MTP studies",
         body,
     )
 
@@ -1258,6 +1711,10 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     summaries = []
+    if any(model["key"] == "minimax_m25" for model in payload.get("models", [])):
+        report, summary = render_minimax_m25(payload, mocker)
+        (output_dir / "minimax_m25.html").write_text(report, encoding="utf-8")
+        summaries.append(summary)
     for model in MODEL_ORDER:
         report, summary = render_model(model, payload, selected[model], mocker)
         (output_dir / f"{model}.html").write_text(report, encoding="utf-8")
@@ -1277,7 +1734,7 @@ def main() -> int:
         ),
         encoding="utf-8",
     )
-    print(json.dumps({"output_dir": str(output_dir), "reports": len(MODEL_ORDER) + 1}, indent=2))
+    print(json.dumps({"output_dir": str(output_dir), "reports": len(summaries) + 1}, indent=2))
     return 0
 
 

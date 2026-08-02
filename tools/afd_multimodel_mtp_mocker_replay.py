@@ -20,6 +20,12 @@ HEADLINE_MTP = {
     "deepseek_v4_flash": "mtp_n2_r70",
     "deepseek_v4_pro": "mtp_n2_r70",
 }
+REPRODUCTION_CASES = {
+    "minimax_m25": {
+        "8k": {"a_nodes": 17, "f_nodes": 1, "a_tp": 1, "batch_per_a_gpu": 72, "microbatches": 2},
+        "16k": {"a_nodes": 17, "f_nodes": 1, "a_tp": 1, "batch_per_a_gpu": 36, "microbatches": 2},
+    }
+}
 
 
 def equal_conditional_rate(nextn: int, accepted_drafts: float) -> float:
@@ -75,6 +81,26 @@ def select_pairs(payload: dict[str, Any]) -> list[dict[str, Any]]:
             if len(no_mtp_rows) != 1:
                 raise ValueError(f"expected one matched no-MTP row for {model}/{workload}, got {len(no_mtp_rows)}")
             selected.append({"model": model, "workload": workload, "no_mtp": no_mtp_rows[0], "mtp": mtp})
+    return selected
+
+
+def select_reproduction_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    selected = []
+    for model, workloads in REPRODUCTION_CASES.items():
+        evidence = evidence_for(payload, model)
+        for workload, contract in workloads.items():
+            matches = [
+                row
+                for row in payload["rows"]
+                if row["model"] == model
+                and row["workload"] == workload
+                and row["scenario"] == "no_mtp"
+                and row["evidence"] == evidence
+                and all(row[key] == value for key, value in contract.items())
+            ]
+            if len(matches) != 1:
+                raise ValueError(f"expected one reproduction row for {model}/{workload}, got {len(matches)}")
+            selected.append(matches[0])
     return selected
 
 
@@ -297,6 +323,34 @@ def main() -> int:
                         waves=args.waves,
                     )
                 )
+    for afd in select_reproduction_rows(sweep):
+        context = int(afd["context"])
+        global_requests = int(afd["global_requests"])
+        agg = afd["agg"]
+        variants = (
+            ("agg", int(agg["replicas"]), int(agg["global_batch"]), float(agg["raw_round_ms"])),
+            ("afd", 1, global_requests, float(afd["raw_round_ms"])),
+        )
+        for topology, workers, worker_batch, raw_round_ms in variants:
+            case_id = f"{afd['model']}_{afd['workload']}_no_mtp_{topology}"
+            print(f"running {case_id}", flush=True)
+            results.append(
+                replay_case(
+                    dynamo=dynamo,
+                    output_dir=output_dir,
+                    case_id=case_id,
+                    context=context,
+                    global_requests=global_requests,
+                    workers=workers,
+                    worker_batch=worker_batch,
+                    raw_round_ms=raw_round_ms,
+                    nextn=0,
+                    accepted_drafts=None,
+                    source=afd,
+                    topology=topology,
+                    waves=args.waves,
+                )
+            )
     output = output_dir / "mocker_summary.json"
     output.write_text(
         json.dumps(
