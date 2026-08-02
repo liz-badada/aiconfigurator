@@ -15,11 +15,11 @@ from typing import Any
 TOTAL_GPUS = 72
 CONTEXTS = ("8k", "16k")
 MODEL_ORDER = ("qwen3_235b", "minimax_m3", "deepseek_v4_flash", "deepseek_v4_pro")
-HEADLINE = {
-    "qwen3_235b": ("eagle3_n3", "measured complete-F overlay"),
-    "minimax_m3": ("mtp_n1_r70", "native AIC"),
-    "deepseek_v4_flash": ("mtp_n2_r70", "native AIC"),
-    "deepseek_v4_pro": ("mtp_n2_r70", "native AIC"),
+HEADLINE_SCENARIO = {
+    "qwen3_235b": "eagle3_n3",
+    "minimax_m3": "mtp_n1_r70",
+    "deepseek_v4_flash": "mtp_n2_r70",
+    "deepseek_v4_pro": "mtp_n2_r70",
 }
 MODEL_LABELS = {
     "qwen3_235b": "Qwen3-235B-A22B",
@@ -116,10 +116,19 @@ def row_key(row: dict[str, Any]) -> tuple:
     )
 
 
+def primary_precision(model_meta: dict[str, Any]) -> dict[str, Any]:
+    profiles = [profile for profile in model_meta["precision_profiles"] if profile["primary"]]
+    if len(profiles) != 1:
+        raise ValueError(f"expected exactly one primary precision for {model_meta['key']}, got {len(profiles)}")
+    return profiles[0]
+
+
 def select_pairs(payload: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
     selected: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     for model in MODEL_ORDER:
-        scenario, evidence = HEADLINE[model]
+        scenario = HEADLINE_SCENARIO[model]
+        model_meta = next(value for value in payload["models"] if value["key"] == model)
+        evidence = primary_precision(model_meta)["evidence"]
         for workload in CONTEXTS:
             mtp = max(
                 (
@@ -137,6 +146,39 @@ def select_pairs(payload: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]
             )
             selected[model][workload] = {"no_mtp": no_mtp, "mtp": mtp}
     return dict(selected)
+
+
+def best_matched_pair(
+    payload: dict[str, Any],
+    *,
+    model: str,
+    workload: str,
+    scenario: str,
+    evidence: str,
+) -> dict[str, dict[str, Any]] | None:
+    candidates: list[dict[str, dict[str, Any]]] = []
+    no_mtp_by_key = {
+        row_key(row): row
+        for row in payload["rows"]
+        if row["model"] == model
+        and row["workload"] == workload
+        and row["scenario"] == "no_mtp"
+        and row["evidence"] == evidence
+    }
+    for mtp in payload["rows"]:
+        if not (
+            mtp["model"] == model
+            and mtp["workload"] == workload
+            and mtp["scenario"] == scenario
+            and mtp["evidence"] == evidence
+        ):
+            continue
+        no_mtp = no_mtp_by_key.get(row_key(mtp))
+        if no_mtp is not None:
+            candidates.append({"no_mtp": no_mtp, "mtp": mtp})
+    if not candidates:
+        return None
+    return max(candidates, key=lambda pair: pair["mtp"]["output_tokens_s_gpu"])
 
 
 def four_way(pair: dict[str, dict[str, Any]]) -> dict[str, float]:
@@ -396,20 +438,20 @@ def document(title: str, subtitle: str, body: str) -> str:
 def evidence_note(model: str) -> tuple[str, str]:
     notes = {
         "qwen3_235b": (
-            "Measured-F hybrid",
-            "AFD F-stage uses the measured complete-stage MegaMoE curve, interpolated only inside its measured load range. A-side and AGG remain AIC HYBRID. This is the strongest AFD alignment evidence here, but it is not a full silicon E2E measurement.",
+            "NVFP4 same-shape MoE / HYBRID system",
+            "The headline uses the exact Qwen expert shape in the GB200 NVFP4 MoE table for both AGG and AFD. Full GQA attention and the remaining system pieces are AIC HYBRID. The measured fused FP8 complete-F result is retained as a separate calibration track and is never relabeled as FP4.",
         ),
         "minimax_m3": (
-            "Scenario / HYBRID",
-            "MSA has no native silicon table and transfers utilization from measured DSA. MoE is generic AIC HYBRID. The 70% conditional acceptance is an internal PoC scenario, not a public position-by-position trace.",
+            "NVFP4 projection / HYBRID",
+            "MSA has no native silicon table and transfers utilization from measured DSA. No same-shape MiniMax MoE row exists at BF16, FP8, or FP4, so the primary NVFP4 result is a target-shape projection, not an FP4 measurement. The 70% conditional acceptance is a PoC scenario.",
         ),
         "deepseek_v4_flash": (
-            "Model-specific attention / HYBRID MoE",
-            "SWA, CSA/HCA and mHC use model-specific tables with HYBRID fallback. MoE uses the native FP4-expert model rather than a measured complete-F overlay. The 70% acceptance is sensitivity-only.",
+            "Model-specific sparse attention / FP4 MoE",
+            "Twenty-one CSA and twenty HCA layers use model-specific tables; two pure-SWA layers reuse HCA timing. The same-shape MoE table uses MXFP4 weights and MXFP8 activations. Single-token attention is silicon-backed; q=3 verification is estimated. The 70% acceptance is sensitivity-only.",
         ),
         "deepseek_v4_pro": (
             "Measured MegaMoE hybrid",
-            "Attention/mHC use declared 0.5.14 donors and MegaMoE uses the declared 0.5.10 measured module. The AFD path is corrected to query the table with per-EP-rank tokens. Loads above 512 local decode tokens use utilization-hold extrapolation. Acceptance is sensitivity-only.",
+            "Thirty CSA layers plus thirty-one HCA layers use declared 0.5.14 donors, and the F path uses the declared measured FP4 MegaMoE module from 0.5.10. The AFD path queries rank-local tokens; loads above 512 local decode tokens use utilization-hold extrapolation. q=3 attention and acceptance are sensitivity estimates.",
         ),
     }
     return notes[model]
@@ -420,27 +462,28 @@ def model_comment(model: str, pairs: dict[str, dict[str, dict[str, Any]]]) -> st
     ratios = {workload: values[workload]["AGG + AFD + MTP"] / values[workload]["AGG + MTP"] for workload in CONTEXTS}
     if model == "qwen3_235b":
         return (
-            f"With measured F-stage timing, AFD+MTP is {ratios['8k']:.2f}× AGG+MTP at 8K and "
-            f"{ratios['16k']:.2f}× at 16K. This is the only model in this study whose aligned F evidence "
-            "supports the same positive AFD direction at both contexts."
+            f"With the same-shape NVFP4 MoE track on both sides, AFD+MTP is {ratios['8k']:.2f}× AGG+MTP "
+            f"at 8K and {ratios['16k']:.2f}× at 16K. The separate FP8 complete-F measurement is shown in "
+            "the precision/evidence section and is not mixed into these four bars."
         )
     if model == "minimax_m3":
         return (
-            "MTP helps both topologies, but AGG gains much more. The selected N=1 AFD speedup is only "
+            "This is the primary NVFP4 projection, not a MiniMax silicon measurement. The selected N=1 AFD speedup is "
             f"{values['8k']['AGG + AFD + MTP'] / values['8k']['AGG + AFD']:.2f}× at 8K and "
             f"{values['16k']['AGG + AFD + MTP'] / values['16k']['AGG + AFD']:.2f}× at 16K because F-side "
-            "work grows close to the accepted-token progress. This is not yet sufficient evidence for an AFD win."
+            "work grows relative to accepted-token progress. Treat the direction as a calibration target until the "
+            "MSA and same-shape MoE kernels are measured."
         )
     if model == "deepseek_v4_flash":
         return (
-            "At the 70% sensitivity point, q=3 verification increases AFD raw service by about 2.2× while "
-            "progress is 2.19×, so AFD MTP is approximately neutral. AGG remains faster; the result should be "
-            "used to identify missing F-stage calibration, not as a hardware conclusion."
+            f"At the 70% sensitivity point, the MXFP4/MXFP8 track gives AFD+MTP / AGG+MTP of "
+            f"{ratios['8k']:.2f}× at 8K and {ratios['16k']:.2f}× at 16K. Its no-MTP CSA/HCA kernels are "
+            "silicon-backed, but q=3 attention is estimated and the two pure-SWA layers use an HCA proxy."
         )
     return (
-        "Correct rank-local MegaMoE token accounting makes no-MTP AFD competitive, but MTP shifts more work into "
-        "the concentrated F pool. AGG therefore gains more from MTP, and AFD+MTP remains below AGG+MTP in this "
-        "70% sensitivity scenario."
+        f"The measured FP4 MegaMoE track gives AFD+MTP / AGG+MTP of {ratios['8k']:.2f}× at 8K and "
+        f"{ratios['16k']:.2f}× at 16K. Rank-local token accounting is corrected, but q=3 attention and MegaMoE "
+        "loads above the measured local-token range remain extrapolated."
     )
 
 
@@ -451,8 +494,10 @@ def render_model(
     mocker: dict[str, Any],
 ) -> tuple[str, dict[str, Any]]:
     label = MODEL_LABELS[model]
-    scenario, evidence = HEADLINE[model]
     model_meta = next(value for value in payload["models"] if value["key"] == model)
+    scenario = HEADLINE_SCENARIO[model]
+    primary = primary_precision(model_meta)
+    evidence = primary["evidence"]
     four_groups = [(workload.upper(), four_way(pairs[workload])) for workload in CONTEXTS]
     evidence_title, evidence_text = evidence_note(model)
     nav = (
@@ -486,6 +531,11 @@ def render_model(
             ["AFD search", "A:F nodes {17:1, 16:2, 14:4, 10:8}; A-TP {1,2,4}; microbatches {1,2,4}"],
             ["Batch semantics", "batch_per_a_gpu; CLI-equivalent a_batch_size = batch_per_a_gpu × A-TP"],
             ["Database", f"SGLang {esc(model_meta['backend_version'])}, HYBRID; headline evidence: {esc(evidence)}"],
+            ["Attention structure", esc(model_meta["attention_note"])],
+            ["Attention timing", esc(model_meta["attention_timing_note"])],
+            ["F-side MoE shape", esc(model_meta["moe_shape_note"])],
+            ["F-side MoE precision", esc(primary["moe_quant_mode"])],
+            ["F-side MoE timing", esc(primary["timing_note"])],
             [
                 "Model",
                 f'<a href="{esc(MODEL_LINKS[model])}">{esc(model_meta["model_path"])}</a> · {esc(model_meta["parameter_note"])}',
@@ -493,7 +543,74 @@ def render_model(
         ],
     )
 
-    body += "<h2>2. Four-way system result</h2>"
+    body += "<h2>2. MoE precision and evidence sensitivity</h2>"
+    precision_groups = []
+    precision_rows = []
+    for profile in model_meta["precision_profiles"]:
+        ratios: dict[str, float] = {"8K": 0.0, "16K": 0.0}
+        cells: dict[str, tuple[float, float, str]] = {}
+        for workload in CONTEXTS:
+            pair = best_matched_pair(
+                payload,
+                model=model,
+                workload=workload,
+                scenario=scenario,
+                evidence=profile["evidence"],
+            )
+            if pair is None:
+                continue
+            values = four_way(pair)
+            ratio = values["AGG + AFD + MTP"] / values["AGG + MTP"]
+            ratios[workload.upper()] = ratio
+            cells[workload] = (
+                ratio,
+                values["AGG + AFD + MTP"],
+                f"{pair['mtp']['a_nodes']}A:{pair['mtp']['f_nodes']}F",
+            )
+        if not cells:
+            continue
+        label_suffix = " · primary" if profile["primary"] else ""
+        precision_groups.append((profile["key"] + label_suffix, ratios))
+        precision_rows.append(
+            [
+                esc(profile["key"] + label_suffix),
+                esc(profile["moe_quant_mode"]),
+                esc(profile["timing_note"]),
+                "—" if "8k" not in cells else fmt(cells["8k"][0], 3) + "×",
+                "—" if "8k" not in cells else fmt(cells["8k"][1], 1),
+                "—" if "8k" not in cells else cells["8k"][2],
+                "—" if "16k" not in cells else fmt(cells["16k"][0], 3) + "×",
+                "—" if "16k" not in cells else fmt(cells["16k"][1], 1),
+                "—" if "16k" not in cells else cells["16k"][2],
+            ]
+        )
+    body += figure(
+        svg_grouped_bars(
+            precision_groups,
+            ["8K", "16K"],
+            y_label="(AGG+AFD+MTP) / (AGG+MTP) at matched MoE precision (×)",
+            x_label="MoE precision / evidence profile",
+            y_max=2.0,
+            value_digits=2,
+        ),
+        "Each bar compares AGG and AFD at the same MoE precision, then independently re-optimizes the A:F split, A-TP, batch, and microbatch count. The primary profile follows FP4 first, then FP8, then BF16 only when a lower-precision path is unavailable. A measured FP8 stage is kept FP8 rather than rescaled or relabeled as FP4.",
+    )
+    body += table(
+        [
+            "Profile",
+            "F MoE precision",
+            "Timing evidence",
+            "8K AFD/AGG",
+            "8K AFD tok/s/GPU",
+            "8K A:F",
+            "16K AFD/AGG",
+            "16K AFD tok/s/GPU",
+            "16K A:F",
+        ],
+        precision_rows,
+    )
+
+    body += "<h2>3. Four-way system result</h2>"
     body += figure(
         svg_grouped_bars(
             four_groups,
@@ -539,7 +656,7 @@ def render_model(
         result_rows,
     )
 
-    body += "<h2>3. MTP accounting: cost, acceptance, and final gain</h2>"
+    body += "<h2>4. MTP accounting: cost, acceptance, and final gain</h2>"
     first_mtp = pairs["8k"]["mtp"]
     nextn, progress = int(first_mtp["nextn"]), float(first_mtp["progress"])
     body += (
@@ -604,10 +721,35 @@ def render_model(
         equation_rows,
     )
 
-    body += "<h2>4. Attention, router, MoE, collective, and transfer work</h2>"
+    body += "<h2>5. Attention, router, MoE, collective, and transfer work</h2>"
+    source_rows = []
+    for workload in CONTEXTS:
+        no_mtp_source = (
+            pairs[workload]["no_mtp"]["agg"]
+            .get("op_sources", {})
+            .get("generation_attention", "not separately reported")
+        )
+        mtp_source = (
+            pairs[workload]["mtp"]["agg"].get("op_sources", {}).get("generation_attention", "not separately reported")
+        )
+        source_rows.append([workload.upper(), esc(no_mtp_source), esc(mtp_source)])
+    body += table(
+        ["Operator contract", "Value", "Evidence / caveat"],
+        [
+            ["A attention", esc(model_meta["attention_note"]), esc(model_meta["attention_timing_note"])],
+            ["F routed MoE", esc(model_meta["moe_shape_note"]), esc(primary["timing_note"])],
+            [
+                "Precision",
+                f"A GEMM={esc(pairs['8k']['mtp']['quant']['a_gemm'])}; A FMHA={esc(pairs['8k']['mtp']['quant']['a_fmha'])}; "
+                f"KV={esc(pairs['8k']['mtp']['quant']['a_kvcache'])}; F MoE={esc(pairs['8k']['mtp']['quant']['f_moe'])}",
+                "AGG and AFD use the same F-side MoE precision in every ratio",
+            ],
+        ],
+    )
+    body += table(["ISL", "No-MTP attention source", "MTP attention source"], source_rows)
     body += figure(
         svg_module_stacks(pairs),
-        "These bars are accumulated worker-side module work, not additive E2E latency. A and F execute as a layer pipeline and communication may be hidden, so raw decode-round service is calculated by the pipeline recurrence rather than by summing every bar.",
+        f"These bars use {esc(model_meta['attention_note'])} on A and {esc(primary['moe_quant_mode'])} routed experts on F. They are accumulated worker-side module work, not additive E2E latency: A and F execute as a layer pipeline, so raw service is calculated by the pipeline recurrence rather than by summing every bar.",
     )
     module_rows = []
     for workload in CONTEXTS:
@@ -639,12 +781,13 @@ def render_model(
             "F MoE",
             "F collective",
             "A-F transfer",
+            "F precision",
             "Bottleneck",
         ],
-        module_rows,
+        [row[:-1] + [esc(primary["moe_quant_mode"]), row[-1]] for row in module_rows],
     )
 
-    body += "<h2>5. Throughput–latency Pareto frontier</h2>"
+    body += "<h2>6. Throughput–latency Pareto frontier</h2>"
     front_series = []
     fronts = {}
     for workload in CONTEXTS:
@@ -680,7 +823,7 @@ def render_model(
         "Each point is non-dominated: moving right accepts more latency to obtain more throughput. Both contexts share exactly the same x and y scales in this chart; the axes are derived from the combined 8K and 16K frontiers, not independently stretched panels.",
     )
 
-    body += "<h2>6. A:F hardware-ratio sensitivity</h2>"
+    body += "<h2>7. A:F hardware-ratio sensitivity</h2>"
     ratio_series = []
     for workload in CONTEXTS:
         selected = pairs[workload]["mtp"]
@@ -712,7 +855,7 @@ def render_model(
         "Only F-node count changes along each line; A-TP, batch per A GPU, and microbatch count stay fixed at that context's selected MTP point. This isolates the hardware split from batch tuning and explains why a single fixed 16A:2F ratio is not generally valid.",
     )
 
-    body += "<h2>7. Dynamo Mocker replay check</h2>"
+    body += "<h2>8. Dynamo Mocker replay check</h2>"
     mock_rows = [result for result in mocker["results"] if result["model"] == model]
     error_groups = [
         (
@@ -736,7 +879,7 @@ def render_model(
         "Mocker reuses AIC's raw full-resident service time, then independently samples MTP bursts and request completion. Mean TPOT agrees within 0.9% in all cases, confirming that q-wide compute and committed-token progress are applied once. One-wave aggregate throughput is intentionally not used as steady state because the slowest stochastic acceptance chain creates a finite-wave tail.",
     )
 
-    body += "<h2>8. MTP-depth capacity sensitivity</h2>"
+    body += "<h2>9. MTP-depth capacity sensitivity</h2>"
     depth_series = []
     depth_rows = []
     for workload in CONTEXTS:
@@ -811,12 +954,28 @@ def render_model(
         depth_rows,
     )
 
-    body += "<h2>9. What is supported, assumed, and not claimed</h2>"
+    body += "<h2>10. What is supported, assumed, and not claimed</h2>"
     selected_scenario_meta = next(value for value in model_meta["scenarios"] if value["name"] == scenario)
     body += table(
         ["Layer", "Status", "Meaning"],
         [
-            ["Model structure", "Supported", esc(model_meta["attention_note"] + "; " + model_meta["moe_note"])],
+            ["Model graph", "Supported", esc(model_meta["attention_note"] + "; " + model_meta["moe_shape_note"])],
+            [
+                "Attention latency",
+                "Partial" if model in {"minimax_m3", "deepseek_v4_flash"} else "Calibrated / extrapolated",
+                esc(model_meta["attention_timing_note"]),
+            ],
+            [
+                "MoE latency",
+                "Projected" if model == "minimax_m3" else "Silicon-backed module",
+                esc(primary["timing_note"]),
+            ],
+            [
+                "Quantization contract",
+                "Controlled",
+                f"Primary F MoE={esc(primary['moe_quant_mode'])}; AGG and AFD use the same precision. "
+                "Alternate profiles are reported separately.",
+            ],
             [
                 "MTP depth / acceptance",
                 "Measured" if model == "qwen3_235b" else "Scenario",
@@ -847,6 +1006,10 @@ def render_model(
         "label": label,
         "scenario": scenario,
         "evidence": evidence,
+        "primary_precision": primary,
+        "attention_structure": model_meta["attention_note"],
+        "attention_timing": model_meta["attention_timing_note"],
+        "moe_shape": model_meta["moe_shape_note"],
         "results": {
             workload: {"four_way": four_way(pairs[workload]), "selected_afd": pairs[workload]["mtp"]}
             for workload in CONTEXTS
@@ -870,7 +1033,9 @@ def render_index(
     body += (
         '<div class="callout"><strong>Question answered.</strong> For each model and context, compare '
         "AGG+AFD against AGG, then compare AGG+AFD+MTP against AGG+MTP. All values use the same 72-GPU "
-        "NVL72 budget and the same offered concurrency within a four-way group.</div>"
+        "NVL72 budget, offered concurrency, and MoE precision within a four-way group. The headline precision "
+        "policy is FP4 first, then FP8, then BF16; a lower-precision result is never compared against a "
+        "higher-precision baseline.</div>"
     )
     body += "<h2>1. Cross-model AFD result</h2>"
     ratio_groups = []
@@ -899,6 +1064,8 @@ def render_index(
                     f"{mtp['a_nodes']}A:{mtp['f_nodes']}F / TP{mtp['a_tp']} / b{mtp['batch_per_a_gpu']} / MB{mtp['microbatches']}",
                 ]
             )
+    winning_no_mtp = [label for label, values in ratio_groups if values["No MTP"] > 1]
+    winning_mtp = [label for label, values in ratio_groups if values["With MTP"] > 1]
     body += figure(
         svg_grouped_bars(
             ratio_groups,
@@ -908,7 +1075,11 @@ def render_index(
             y_max=2.0,
             value_digits=2,
         ),
-        "The horizontal decision boundary is 1×. Qwen's measured-F hybrid supports an AFD win in both contexts. DeepSeek-V4 Pro supports a no-MTP AFD win after correcting rank-local MegaMoE tokens, but not an AFD+MTP win at the assumed 70% rate. MiniMax and V4-Flash remain negative in the current HYBRID model.",
+        "The horizontal decision boundary is 1×. No-MTP AFD is above that boundary for "
+        + (", ".join(winning_no_mtp) if winning_no_mtp else "none of the cases")
+        + "; AFD+MTP is above it for "
+        + (", ".join(winning_mtp) if winning_mtp else "none of the cases")
+        + ". These are simulator conclusions under the evidence and precision contract in Section 4, not blanket hardware claims.",
     )
     body += table(
         ["Case", "AGG", "AGG+MTP", "AGG+AFD", "AGG+AFD+MTP", "AFD/AGG", "AFD+MTP / AGG+MTP", "Selected AFD config"],
@@ -977,7 +1148,33 @@ def render_index(
     )
     body += table(["Model", "Evidence class", "What the result means"], evidence_rows)
 
-    body += "<h2>5. Dynamo Mocker token-accounting validation</h2>"
+    body += "<h2>5. Attention structure and F-side MoE precision</h2>"
+    contract_rows = []
+    for model in MODEL_ORDER:
+        model_meta = next(value for value in payload["models"] if value["key"] == model)
+        primary = primary_precision(model_meta)
+        contract_rows.append(
+            [
+                f'<a href="{model}.html">{esc(MODEL_LABELS[model])}</a>',
+                esc(model_meta["attention_note"]),
+                esc(model_meta["attention_timing_note"]),
+                esc(model_meta["moe_shape_note"]),
+                esc(primary["moe_quant_mode"]),
+                esc(primary["timing_note"]),
+            ]
+        )
+    body += table(
+        ["Model", "A-side attention", "Attention timing", "F-side MoE shape", "F precision", "MoE timing"],
+        contract_rows,
+    )
+    body += (
+        '<div class="callout warn"><strong>Structural support is not the same as silicon calibration.</strong> '
+        "MiniMax-M3 has neither an MSA silicon table nor a same-shape MoE row. DeepSeek-V4 Flash uses an HCA "
+        "timing proxy for two pure-SWA layers. MTP attention is q-wide HYBRID estimation for all sparse-attention "
+        "models in this report.</div>"
+    )
+
+    body += "<h2>6. Dynamo Mocker token-accounting validation</h2>"
     mock_groups = []
     for model in MODEL_ORDER:
         model_rows = [row for row in mocker["results"] if row["model"] == model]
@@ -1004,7 +1201,7 @@ def render_index(
         "All 32 replay cases are below 0.9% mean-TPOT error. This validates the request lifecycle and stochastic accepted-token accounting against the AIC steady-state equation. Finite one-wave throughput is lower for MTP because completion waits for the slowest sampled acceptance chain; it is not used as the capacity metric.",
     )
 
-    body += "<h2>6. Reproduction identity</h2>"
+    body += "<h2>7. Reproduction identity</h2>"
     body += table(
         ["Artifact", "Identity"],
         [

@@ -17,6 +17,7 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
+from aiconfigurator.sdk import common
 from aiconfigurator.sdk.backends.factory import get_backend
 from aiconfigurator.sdk.config import AFDConfig
 from aiconfigurator.sdk.inference_session import AFDInferenceSession, InferenceSession
@@ -71,9 +72,22 @@ class ModelSpec:
     topk: int
     parameter_note: str
     attention_note: str
+    attention_timing_note: str
     moe_note: str
+    moe_shape_note: str
+    precision_profiles: tuple[PrecisionProfile, ...]
     scenarios: tuple[Scenario, ...]
     f_node_grid: tuple[int, ...] = F_NODE_GRID
+
+
+@dataclass(frozen=True)
+class PrecisionProfile:
+    key: str
+    moe_quant_mode: str
+    evidence: str
+    timing_note: str
+    primary: bool = False
+    measured_complete_f: bool = False
 
 
 def expected_accepted(nextn: int, conditional_rate: float) -> float:
@@ -91,8 +105,50 @@ MODELS = (
         layers=94,
         topk=8,
         parameter_note="235B total / 22B active",
-        attention_note="GQA; packaged SGLang attention data",
-        moe_note="generic AIC MoE path; headline AFD also carries the measured complete-F overlay",
+        attention_note=(
+            "full-context GQA, 64 query heads / 4 KV heads, head_dim=128; "
+            "no sparse, sliding-window, or linear attention"
+        ),
+        attention_timing_note=(
+            "SGLang 0.5.14 GQA table; single-token decode can resolve to silicon, while q=4 MTP verification "
+            "uses the q-wide HYBRID estimate"
+        ),
+        moe_note=(
+            "the primary AIC track uses same-shape NVFP4 expert data; the separate measured complete-F "
+            "track remains FP8 because that is the kernel that was measured"
+        ),
+        moe_shape_note="hidden=4096, expert_inter=1536, 128 routed experts, top-8, power-law-1.01 routing",
+        precision_profiles=(
+            PrecisionProfile(
+                key="nvfp4",
+                moe_quant_mode="nvfp4",
+                evidence="native AIC / NVFP4",
+                timing_note=(
+                    "same-shape GB200 SGLang 0.5.14 silicon rows, flashinfer TRT-LLM MoE; "
+                    "dispatch/combine remain AIC communication models"
+                ),
+                primary=True,
+            ),
+            PrecisionProfile(
+                key="fp8",
+                moe_quant_mode="fp8_block",
+                evidence="native AIC / FP8",
+                timing_note=(
+                    "same-shape GB200 SGLang 0.5.14 silicon rows, flashinfer TRT-LLM MoE; "
+                    "used as a precision-control track"
+                ),
+            ),
+            PrecisionProfile(
+                key="measured_fp8_complete_f",
+                moe_quant_mode="fp8_block",
+                evidence="measured complete-F overlay / FP8",
+                timing_note=(
+                    "measured B200 FastAFD complete F stage: fused dispatch + persistent FP8 experts + combine; "
+                    "interpolation is restricted to the measured assignment range"
+                ),
+                measured_complete_f=True,
+            ),
+        ),
         scenarios=(
             NO_MTP,
             Scenario(
@@ -112,8 +168,43 @@ MODELS = (
         layers=60,
         topk=4,
         parameter_note="428B total / about 23B active",
-        attention_note="MSA; HYBRID cross-op utilization transfer from measured DSA",
-        moe_note="generic SGLang MoE HYBRID model; no model-specific measured complete-F table",
+        attention_note=(
+            "MiniMax Sparse Attention (MSA): GQA 64Q/4KV, block indexer selects 16 x 128-token blocks "
+            "for a 2,048-token sparse attention budget; not linear attention"
+        ),
+        attention_timing_note=(
+            "no MSA silicon table; target-shape SOL transfers measured DSA utilization, and q-wide MTP "
+            "verification is estimated"
+        ),
+        moe_note=(
+            "no exact MiniMax-M3 MoE row exists at any precision; NVFP4, FP8, and BF16 are all AIC HYBRID "
+            "shape projections, with NVFP4 selected as the deployment target"
+        ),
+        moe_shape_note="hidden=6144, expert_inter=3072, 128 routed experts, top-4, power-law-1.01 routing",
+        precision_profiles=(
+            PrecisionProfile(
+                key="nvfp4_projected",
+                moe_quant_mode="nvfp4",
+                evidence="native AIC / NVFP4 projected",
+                timing_note=(
+                    "HYBRID projection at the exact MiniMax shape; no same-shape silicon row, so this is a "
+                    "quantized-deployment sensitivity rather than an FP4 measurement"
+                ),
+                primary=True,
+            ),
+            PrecisionProfile(
+                key="fp8_projected",
+                moe_quant_mode="fp8_block",
+                evidence="native AIC / FP8 projected",
+                timing_note="HYBRID projection at the exact MiniMax shape; no same-shape silicon row",
+            ),
+            PrecisionProfile(
+                key="bf16_projected",
+                moe_quant_mode="bfloat16",
+                evidence="native AIC / BF16 projected",
+                timing_note="HYBRID projection at the exact MiniMax shape; no same-shape silicon row",
+            ),
+        ),
         scenarios=(
             NO_MTP,
             Scenario("mtp_n1_r70", 1, expected_accepted(1, 0.70), "scenario: conditional acceptance r=0.70"),
@@ -130,8 +221,37 @@ MODELS = (
         layers=43,
         topk=6,
         parameter_note="284B total / 13B active",
-        attention_note="SWA + CSA/HCA + mHC; model-specific measured tables with HYBRID fallback",
-        moe_note="native FP4-expert SGLang MoE model",
+        attention_note=(
+            "21 CSA layers (compression 4, top-512) + 20 HCA layers (compression 128) + 2 pure SWA layers, "
+            "all with a 128-token local window and mHC; no linear attention"
+        ),
+        attention_timing_note=(
+            "CSA/HCA and mHC use model-specific SGLang 0.5.14 tables; the 2 pure-SWA layers are approximated "
+            "with HCA latency; q=3 MTP verification uses HYBRID estimation"
+        ),
+        moe_note=(
+            "FP4 experts use the model's native MXFP4-weight/MXFP8-activation kernel; FP8 is retained only as "
+            "a same-shape precision-control track"
+        ),
+        moe_shape_note="hidden=4096, expert_inter=2048, 256 routed experts, top-6, power-law-1.01 routing",
+        precision_profiles=(
+            PrecisionProfile(
+                key="mxfp4_mxfp8",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                evidence="native AIC / MXFP4-MXFP8",
+                timing_note=(
+                    "same-shape GB200 SGLang 0.5.14 silicon rows, MXFP4 weights + MXFP8 activations, "
+                    "flashinfer TRT-LLM MoE"
+                ),
+                primary=True,
+            ),
+            PrecisionProfile(
+                key="fp8",
+                moe_quant_mode="fp8_block",
+                evidence="native AIC / FP8",
+                timing_note="same-shape GB200 SGLang 0.5.14 silicon rows, fused Triton MoE",
+            ),
+        ),
         scenarios=(
             NO_MTP,
             Scenario("mtp_n2_r70", 2, expected_accepted(2, 0.70), "sensitivity anchor only: conditional r=0.70"),
@@ -146,8 +266,28 @@ MODELS = (
         layers=61,
         topk=6,
         parameter_note="1.6T total / 49B active",
-        attention_note="SWA + CSA/HCA + mHC from declared 0.5.14 donors",
-        moe_note="measured MegaMoE module from the declared SGLang 0.5.10 donor",
+        attention_note=(
+            "30 CSA layers (compression 4, top-1,024) + 31 HCA layers (compression 128), each with a "
+            "128-token local window and mHC; no pure SWA-only or linear-attention layer"
+        ),
+        attention_timing_note=(
+            "backend 0.5.12 declares reuse of model-specific CSA/HCA and mHC donors from SGLang 0.5.14; "
+            "q=3 MTP verification uses HYBRID estimation"
+        ),
+        moe_note="measured FP4 MegaMoE module from the declared SGLang 0.5.10 donor",
+        moe_shape_note="hidden=7168, expert_inter=3072, 384 routed experts, top-6, power-law-1.01 routing",
+        precision_profiles=(
+            PrecisionProfile(
+                key="megamoe_fp4",
+                moe_quant_mode="w4a8_mxfp4_mxfp8",
+                evidence="native AIC / MegaMoE FP4",
+                timing_note=(
+                    "same-shape measured MegaMoE module, FP8 activations + FP4 experts; exact/interpolated up "
+                    "to 512 local decode tokens and utilization-hold extrapolation above that range"
+                ),
+                primary=True,
+            ),
+        ),
         scenarios=(
             NO_MTP,
             Scenario("mtp_n2_r70", 2, expected_accepted(2, 0.70), "sensitivity anchor only: conditional r=0.70"),
@@ -156,6 +296,11 @@ MODELS = (
     ),
 )
 MODEL_BY_KEY = {model.key: model for model in MODELS}
+
+
+def precision_for(model_key: str, precision_key: str) -> PrecisionProfile:
+    spec = MODEL_BY_KEY[model_key]
+    return next(profile for profile in spec.precision_profiles if profile.key == precision_key)
 
 
 def git_value(*args: str) -> str:
@@ -225,9 +370,10 @@ def operation_rows(side: str, values: dict[str, float], multiplier: int = 1) -> 
 
 
 @cache
-def task_for(model_key: str, context: int, scenario_name: str) -> Task:
+def task_for(model_key: str, context: int, scenario_name: str, precision_key: str) -> Task:
     spec = MODEL_BY_KEY[model_key]
     scenario = next(value for value in spec.scenarios if value.name == scenario_name)
+    precision = precision_for(model_key, precision_key)
     return Task(
         serving_mode="agg",
         model_path=spec.model_path,
@@ -240,6 +386,7 @@ def task_for(model_key: str, context: int, scenario_name: str) -> Task:
         nextn=scenario.nextn,
         nextn_accepted=scenario.accepted_drafts,
         moe_backend=spec.moe_backend,
+        moe_quant_mode=common.MoEQuantMode[precision.moe_quant_mode],
     )
 
 
@@ -258,11 +405,12 @@ def static_point(
     model_key: str,
     context: int,
     scenario_name: str,
+    precision_key: str,
     world: int,
     tp: int,
     local_batch: int,
 ) -> dict[str, Any]:
-    task = task_for(model_key, context, scenario_name)
+    task = task_for(model_key, context, scenario_name, precision_key)
     scenario = next(value for value in MODEL_BY_KEY[model_key].scenarios if value.name == scenario_name)
     dp = world // tp
     model_config, model = configured_model(task, tp=tp, dp=dp, moe_tp=1, moe_ep=world)
@@ -304,9 +452,16 @@ def static_point(
 
 
 @cache
-def static_capacity(model_key: str, context: int, scenario_name: str, world: int, tp: int) -> int:
+def static_capacity(
+    model_key: str,
+    context: int,
+    scenario_name: str,
+    precision_key: str,
+    world: int,
+    tp: int,
+) -> int:
     try:
-        if static_point(model_key, context, scenario_name, world, tp, 1)["oom"]:
+        if static_point(model_key, context, scenario_name, precision_key, world, tp, 1)["oom"]:
             return 0
     except Exception:
         return 0
@@ -314,7 +469,7 @@ def static_capacity(model_key: str, context: int, scenario_name: str, world: int
     while low < high:
         middle = (low + high + 1) // 2
         try:
-            feasible = not static_point(model_key, context, scenario_name, world, tp, middle)["oom"]
+            feasible = not static_point(model_key, context, scenario_name, precision_key, world, tp, middle)["oom"]
         except Exception:
             feasible = False
         if feasible:
@@ -325,7 +480,13 @@ def static_capacity(model_key: str, context: int, scenario_name: str, world: int
 
 
 @cache
-def static_cluster(model_key: str, context: int, scenario_name: str, offered_requests: int) -> dict[str, Any]:
+def static_cluster(
+    model_key: str,
+    context: int,
+    scenario_name: str,
+    precision_key: str,
+    offered_requests: int,
+) -> dict[str, Any]:
     scenario = next(value for value in MODEL_BY_KEY[model_key].scenarios if value.name == scenario_name)
     candidates: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -337,13 +498,13 @@ def static_cluster(model_key: str, context: int, scenario_name: str, offered_req
             if world % tp:
                 continue
             dp = world // tp
-            capacity = static_capacity(model_key, context, scenario_name, world, tp)
+            capacity = static_capacity(model_key, context, scenario_name, precision_key, world, tp)
             if not capacity:
                 continue
             active = min(offered_requests, replicas * dp * capacity)
             local_batch = max(1, math.ceil(active / (replicas * dp)))
             try:
-                point = static_point(model_key, context, scenario_name, world, tp, local_batch)
+                point = static_point(model_key, context, scenario_name, precision_key, world, tp, local_batch)
             except Exception as error:
                 errors.append(f"world={world},tp={tp}: {type(error).__name__}: {error}")
                 continue
@@ -368,6 +529,7 @@ def static_cluster(model_key: str, context: int, scenario_name: str, offered_req
 def afd_point(
     spec: ModelSpec,
     scenario: Scenario,
+    precision: PrecisionProfile,
     *,
     context: int,
     a_nodes: int,
@@ -376,10 +538,9 @@ def afd_point(
     batch_per_a_gpu: int,
     microbatches: int,
     measured_f_ms: float | None = None,
-    evidence: str = "native AIC",
     measured_note: str = "",
 ) -> dict[str, Any]:
-    task = task_for(spec.key, context, scenario.name)
+    task = task_for(spec.key, context, scenario.name, precision.key)
     database = task._load_database(SYSTEM, BACKEND, spec.backend_version)
     base_config = task.build_model_config(role="agg")
     a_config = copy.deepcopy(base_config)
@@ -443,7 +604,7 @@ def afd_point(
     }
     raw_round_ms = float(raw["decode_batch_service_time_ms"])
     manual_throughput = global_requests * scenario.progress * 1000.0 / raw_round_ms
-    baseline = static_cluster(spec.key, context, scenario.name, global_requests)
+    baseline = static_cluster(spec.key, context, scenario.name, precision.key, global_requests)
     modules = (
         operation_rows("A", a_ops, microbatches)
         + operation_rows("F", f_ops, microbatches)
@@ -453,7 +614,12 @@ def afd_point(
         "model": spec.key,
         "scenario": scenario.name,
         "context": context,
-        "evidence": evidence,
+        "evidence": precision.evidence,
+        "precision_profile": precision.key,
+        "attention_structure": spec.attention_note,
+        "attention_timing_note": spec.attention_timing_note,
+        "moe_shape_note": spec.moe_shape_note,
+        "moe_timing_note": precision.timing_note,
         "measured_f_note": measured_note,
         "nextn": scenario.nextn,
         "q": scenario.q,
@@ -477,6 +643,12 @@ def afd_point(
         "a_memory_gb": float(raw["(a)memory"]),
         "f_memory_gb": float(raw["(f)memory"]),
         "measured_f_ms": measured_f_ms,
+        "quant": {
+            "a_gemm": a_config.gemm_quant_mode.name,
+            "a_fmha": a_config.fmha_quant_mode.name,
+            "a_kvcache": a_config.kvcache_quant_mode.name,
+            "f_moe": f_config.moe_quant_mode.name,
+        },
         "modules": modules,
         "agg": baseline,
         "afd_over_agg": manual_throughput / baseline["cluster_output_tokens_s"],
@@ -488,110 +660,93 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     measured_curves = load_measured_f(args.measured_f_csv)
     rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
-    total_groups = sum(len(model.scenarios) * len(WORKLOADS) for model in selected)
+    total_groups = sum(len(model.scenarios) * len(model.precision_profiles) * len(WORKLOADS) for model in selected)
     group_index = 0
     for spec in selected:
         for workload, workload_spec in WORKLOADS.items():
             context = int(workload_spec["context"])
             for scenario in spec.scenarios:
-                group_index += 1
-                print(
-                    f"[{group_index}/{total_groups}] {spec.key} {workload} {scenario.name}",
-                    flush=True,
-                )
-                for f_nodes in spec.f_node_grid:
-                    a_nodes = TOTAL_NODES - f_nodes
-                    for a_tp in A_TPS:
-                        for batch_per_a_gpu in workload_spec["batch_per_a_gpu"]:
-                            for microbatches in MICROBATCHES:
-                                key = {
-                                    "model": spec.key,
-                                    "workload": workload,
-                                    "scenario": scenario.name,
-                                    "a_nodes": a_nodes,
-                                    "f_nodes": f_nodes,
-                                    "a_tp": a_tp,
-                                    "batch_per_a_gpu": batch_per_a_gpu,
-                                    "microbatches": microbatches,
-                                }
-                                try:
-                                    native = afd_point(
-                                        spec,
-                                        scenario,
-                                        context=context,
-                                        a_nodes=a_nodes,
-                                        f_nodes=f_nodes,
-                                        a_tp=a_tp,
-                                        batch_per_a_gpu=int(batch_per_a_gpu),
-                                        microbatches=microbatches,
-                                    )
-                                    native["workload"] = workload
-                                    rows.append(native)
-                                except Exception as error:
-                                    failures.append(
-                                        {
-                                            **key,
-                                            "evidence": "native AIC",
-                                            "error": f"{type(error).__name__}: {error}",
-                                        }
-                                    )
+                for precision in spec.precision_profiles:
+                    group_index += 1
+                    print(
+                        f"[{group_index}/{total_groups}] {spec.key} {workload} {scenario.name} {precision.key}",
+                        flush=True,
+                    )
+                    for f_nodes in spec.f_node_grid:
+                        a_nodes = TOTAL_NODES - f_nodes
+                        for a_tp in A_TPS:
+                            for batch_per_a_gpu in workload_spec["batch_per_a_gpu"]:
+                                for microbatches in MICROBATCHES:
+                                    key = {
+                                        "model": spec.key,
+                                        "workload": workload,
+                                        "scenario": scenario.name,
+                                        "precision_profile": precision.key,
+                                        "a_nodes": a_nodes,
+                                        "f_nodes": f_nodes,
+                                        "a_tp": a_tp,
+                                        "batch_per_a_gpu": batch_per_a_gpu,
+                                        "microbatches": microbatches,
+                                        "evidence": precision.evidence,
+                                    }
+                                    measured_ms = None
+                                    measured_note = ""
+                                    assignments = None
+                                    if precision.measured_complete_f:
+                                        global_requests = a_nodes * GPUS_PER_NODE * int(batch_per_a_gpu)
+                                        layer_token_factor = scenario.q + scenario.nextn / spec.layers
+                                        assignments = (
+                                            global_requests
+                                            * layer_token_factor
+                                            * spec.topk
+                                            / (microbatches * f_nodes * GPUS_PER_NODE)
+                                        )
+                                        measured_ms, measured_note = interpolate_inside(
+                                            measured_curves.get(context, []), assignments
+                                        )
+                                        if measured_ms is None:
+                                            continue
+                                    try:
+                                        point = afd_point(
+                                            spec,
+                                            scenario,
+                                            precision,
+                                            context=context,
+                                            a_nodes=a_nodes,
+                                            f_nodes=f_nodes,
+                                            a_tp=a_tp,
+                                            batch_per_a_gpu=int(batch_per_a_gpu),
+                                            microbatches=microbatches,
+                                            measured_f_ms=measured_ms,
+                                            measured_note=measured_note,
+                                        )
+                                        point["workload"] = workload
+                                        if assignments is not None:
+                                            point["assignments_per_f_gpu_per_microbatch"] = assignments
+                                        rows.append(point)
+                                    except Exception as error:
+                                        failures.append(
+                                            {
+                                                **key,
+                                                "error": f"{type(error).__name__}: {error}",
+                                            }
+                                        )
 
-                                if spec.key != "qwen3_235b":
-                                    continue
-                                global_requests = a_nodes * GPUS_PER_NODE * int(batch_per_a_gpu)
-                                layer_token_factor = scenario.q + scenario.nextn / spec.layers
-                                assignments = (
-                                    global_requests
-                                    * layer_token_factor
-                                    * spec.topk
-                                    / (microbatches * f_nodes * GPUS_PER_NODE)
-                                )
-                                measured_ms, measured_note = interpolate_inside(
-                                    measured_curves.get(context, []), assignments
-                                )
-                                if measured_ms is None:
-                                    continue
-                                try:
-                                    measured = afd_point(
-                                        spec,
-                                        scenario,
-                                        context=context,
-                                        a_nodes=a_nodes,
-                                        f_nodes=f_nodes,
-                                        a_tp=a_tp,
-                                        batch_per_a_gpu=int(batch_per_a_gpu),
-                                        microbatches=microbatches,
-                                        measured_f_ms=measured_ms,
-                                        evidence="measured complete-F overlay",
-                                        measured_note=measured_note,
-                                    )
-                                    measured["workload"] = workload
-                                    measured["assignments_per_f_gpu_per_microbatch"] = assignments
-                                    rows.append(measured)
-                                except Exception as error:
-                                    failures.append(
-                                        {
-                                            **key,
-                                            "evidence": "measured complete-F overlay",
-                                            "error": f"{type(error).__name__}: {error}",
-                                        }
-                                    )
-
-                checkpoint = {
-                    "schema": "aic.afd-multimodel-mtp.v1.partial",
-                    "rows": rows,
-                    "failures": failures,
-                }
-                args.output.parent.mkdir(parents=True, exist_ok=True)
-                args.output.with_suffix(".partial.json").write_text(
-                    json.dumps(checkpoint, indent=2, sort_keys=True), encoding="utf-8"
-                )
+                    checkpoint = {
+                        "schema": "aic.afd-multimodel-mtp.v2.partial",
+                        "rows": rows,
+                        "failures": failures,
+                    }
+                    args.output.parent.mkdir(parents=True, exist_ok=True)
+                    args.output.with_suffix(".partial.json").write_text(
+                        json.dumps(checkpoint, indent=2, sort_keys=True), encoding="utf-8"
+                    )
 
     source_counts = Counter()
     for row in rows:
         source_counts.update(row["agg"].get("op_sources", {}).values())
     return {
-        "schema": "aic.afd-multimodel-mtp.v1",
+        "schema": "aic.afd-multimodel-mtp.v2",
         "code": {
             "branch": git_value("branch", "--show-current"),
             "commit": git_value("rev-parse", "HEAD"),
@@ -613,6 +768,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "batch_semantics": "batch_per_a_gpu; a_batch_size=batch_per_a_gpu*a_tp",
             "mtp_compute": "q=nextn+1 target tokens plus nextn draft-layer equivalents: q*L+nextn",
             "mtp_progress": "1+expected accepted draft tokens",
+            "moe_precision_policy": (
+                "Primary headline uses the lowest precision with a model-compatible AIC path: "
+                "MXFP4/NVFP4, then FP8, then BF16. AGG and AFD use the same MoE precision. "
+                "Alternate precision profiles are sensitivity controls, not mixed into the headline."
+            ),
             "scope": "decode only; no prefill or request-arrival model in the AIC sweep",
         },
         "models": [

@@ -35,8 +35,12 @@ def equal_conditional_rate(nextn: int, accepted_drafts: float) -> float:
     return (low + high) / 2
 
 
-def evidence_for(model: str) -> str:
-    return "measured complete-F overlay" if model == "qwen3_235b" else "native AIC"
+def evidence_for(payload: dict[str, Any], model: str) -> str:
+    model_meta = next(value for value in payload["models"] if value["key"] == model)
+    profiles = [profile for profile in model_meta["precision_profiles"] if profile["primary"]]
+    if len(profiles) != 1:
+        raise ValueError(f"expected exactly one primary precision for {model}, got {len(profiles)}")
+    return profiles[0]["evidence"]
 
 
 def row_key(row: dict[str, Any]) -> tuple:
@@ -56,7 +60,7 @@ def select_pairs(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows = payload["rows"]
     selected: list[dict[str, Any]] = []
     for model, mtp_name in HEADLINE_MTP.items():
-        evidence = evidence_for(model)
+        evidence = evidence_for(payload, model)
         for workload in ("8k", "16k"):
             mtp_rows = [
                 row
