@@ -74,6 +74,26 @@ def select_pairs(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return selected
 
 
+def apply_sweep_overlays(payload: dict[str, Any], overlays: list[Path]) -> dict[str, Any]:
+    merged = dict(payload)
+    merged["rows"] = list(payload["rows"])
+    merged["models"] = list(payload.get("models", []))
+    merged["failures"] = list(payload.get("failures", []))
+    merged["overlays"] = []
+    for path in overlays:
+        overlay = json.loads(path.resolve().read_text(encoding="utf-8"))
+        model_keys = {model["key"] for model in overlay.get("models", [])}
+        merged["rows"] = [row for row in merged["rows"] if row["model"] not in model_keys] + overlay["rows"]
+        merged["models"] = [model for model in merged["models"] if model["key"] not in model_keys] + overlay.get(
+            "models", []
+        )
+        merged["failures"] = [row for row in merged["failures"] if row.get("model") not in model_keys] + overlay.get(
+            "failures", []
+        )
+        merged["overlays"].append({"path": str(path.resolve()), "models": sorted(model_keys), "code": overlay["code"]})
+    return merged
+
+
 def write_profile(
     path: Path,
     *,
@@ -181,9 +201,7 @@ def replay_case(
         raise RuntimeError(f"Mocker failed for {case_id}:\n{completed.stdout[-8000:]}")
     result = json.loads(report.read_text(encoding="utf-8"))
     expected_tpot_ms = (
-        float(source["agg"]["effective_tpot_ms"])
-        if topology == "agg"
-        else float(source["effective_tpot_ms"])
+        float(source["agg"]["effective_tpot_ms"]) if topology == "agg" else float(source["effective_tpot_ms"])
     )
     return {
         "case_id": case_id,
@@ -220,6 +238,7 @@ def replay_case(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sweep", type=Path, required=True)
+    parser.add_argument("--overlay-sweep", type=Path, action="append", default=[])
     parser.add_argument("--dynamo", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--waves", type=int, default=1)
@@ -228,7 +247,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    sweep = json.loads(args.sweep.resolve().read_text(encoding="utf-8"))
+    sweep = apply_sweep_overlays(
+        json.loads(args.sweep.resolve().read_text(encoding="utf-8")),
+        args.overlay_sweep,
+    )
     dynamo = args.dynamo.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -281,6 +303,7 @@ def main() -> int:
                 ).strip(),
                 "dynamo_commit": subprocess.check_output(("git", "rev-parse", "HEAD"), cwd=dynamo, text=True).strip(),
                 "output_tokens_per_request": OUTPUT_TOKENS,
+                "sweep_overlays": sweep.get("overlays", []),
                 "profile_note": (
                     "AIC supplies the fixed full-resident raw service time. Mocker validates routing, "
                     "request lifecycle, finite-wave tails, and stochastic MTP burst accounting; it does not "
