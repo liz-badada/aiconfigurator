@@ -90,6 +90,67 @@ MINIMAX_M25_REFERENCE = {
     },
 }
 
+FASTAFD_REFERENCE = {
+    "qwen3_235b": {
+        "8k": {
+            "baseline_tps_gpu": 1781.0,
+            "afd_tps_gpu": 2518.0,
+            "speedup": 1.41,
+            "baseline_step_ms": 35.934868,
+            "afd_step_ms": 33.359809,
+            "baseline_batch_gpu": 64,
+            "afd_batch_a_gpu": 96,
+            "a_nodes": 7,
+            "f_nodes": 1,
+            "total_gpus": 32,
+        },
+        "16k": {
+            "baseline_tps_gpu": 954.0,
+            "afd_tps_gpu": 1377.0,
+            "speedup": 1.44,
+            "baseline_step_ms": 33.542977,
+            "afd_step_ms": 31.953522,
+            "baseline_batch_gpu": 32,
+            "afd_batch_a_gpu": 48,
+            "a_nodes": 11,
+            "f_nodes": 1,
+            "total_gpus": 48,
+        },
+    },
+    "minimax_m25": {
+        workload: {
+            **reference,
+            "a_nodes": 17,
+            "f_nodes": 1,
+            "total_gpus": 72,
+        }
+        for workload, reference in MINIMAX_M25_REFERENCE.items()
+    },
+}
+
+ATTENTION_SHORT = {
+    "minimax_m25": "Full GQA",
+    "qwen3_235b": "Full GQA",
+    "minimax_m3": "MSA",
+    "deepseek_v4_flash": "CSA + HCA + SWA",
+    "deepseek_v4_pro": "CSA + HCA",
+}
+
+TRACK_LABELS = {
+    ("minimax_m25", "calibrated_fp8_effective_f"): "AIC calibrated reproduction",
+    ("minimax_m25", "measured_fp8_complete_f"): "B200 NVL8 measured F injected",
+    ("minimax_m25", "generic_fp8"): "Generic AIC FP8",
+    ("qwen3_235b", "nvfp4"): "AIC native NVFP4",
+    ("qwen3_235b", "fp8"): "Generic AIC FP8",
+    ("qwen3_235b", "measured_fp8_complete_f"): "B200 NVL8 measured F injected",
+    ("minimax_m3", "nvfp4_projected"): "AIC NVFP4 projection",
+    ("minimax_m3", "fp8_projected"): "AIC FP8 projection",
+    ("minimax_m3", "bf16_projected"): "AIC BF16 projection",
+    ("deepseek_v4_flash", "mxfp4_mxfp8"): "AIC native MXFP4/MXFP8",
+    ("deepseek_v4_flash", "fp8"): "Generic AIC FP8",
+    ("deepseek_v4_pro", "megamoe_fp4"): "AIC + measured MegaMoE FP4",
+}
+
 CSS = """
 :root{--ink:#17202a;--muted:#5f6b76;--line:#d8dee4;--panel:#f7f9fb;--blue:#0072B2;--orange:#D55E00}
 *{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.55 Inter,system-ui,-apple-system,Segoe UI,sans-serif}
@@ -99,6 +160,7 @@ main{max-width:1180px;margin:0 auto;padding:34px 34px 70px}h1{font-size:32px;lin
 .callout{border-left:5px solid var(--blue);background:#eef7fb;padding:12px 15px;margin:14px 0}.warn{border-left-color:var(--orange);background:#fff4ef}.ok{border-left-color:#009E73;background:#effaf6}
 .figure{border:1px solid var(--line);border-radius:10px;padding:14px;margin:16px 0;background:#fff}.figure svg{display:block;width:100%;height:auto}.comment{margin:10px 4px 2px;color:#34404b}.comment strong{color:var(--ink)}
 table{border-collapse:collapse;width:100%;margin:10px 0 18px;font-size:13px}th,td{border:1px solid var(--line);padding:7px 8px;text-align:right;vertical-align:top}th{background:#f1f4f6}th:first-child,td:first-child{text-align:left}.scroll{overflow-x:auto}.good{color:#007a55;font-weight:700}.bad{color:#b43b20;font-weight:700}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.small{font-size:12px}.foot{margin-top:38px;color:var(--muted);font-size:12px}
+.matrix table{min-width:2200px}.matrix th{position:sticky;top:0;z-index:1;white-space:nowrap}.matrix td{white-space:nowrap}.matrix tr.public{background:#effaf6}.matrix tr.calibrated{background:#fff8e8}.matrix tr.measured{background:#fff2fa}.matrix tr.projected{background:#f7f3ff}
 svg text{font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;fill:#24313d}.grid{stroke:#dfe5ea;stroke-width:1}.axis{stroke:#53606b;stroke-width:1.2}.legend{font-size:12px}.tick{font-size:11px}.value-label{font-size:10px;font-weight:650}
 @media print{main{max-width:none;padding:18px}.figure{break-inside:avoid}a{color:inherit}}
 """
@@ -447,8 +509,14 @@ def solve_break_even_rate(nextn: int, raw_ratio: float) -> float | None:
     return (low + high) / 2
 
 
-def table(headers: list[str], rows: list[list[object]], classes: list[str] | None = None) -> str:
-    out = ['<div class="scroll"><table><thead><tr>']
+def table(
+    headers: list[str],
+    rows: list[list[object]],
+    classes: list[str] | None = None,
+    wrapper_class: str = "",
+) -> str:
+    wrapper_classes = "scroll" + (f" {wrapper_class}" if wrapper_class else "")
+    out = [f'<div class="{wrapper_classes}"><table><thead><tr>']
     out.extend(f"<th>{esc(header)}</th>" for header in headers)
     out.append("</tr></thead><tbody>")
     for row_index, row in enumerate(rows):
@@ -1490,10 +1558,209 @@ def minimax_m25_index_section(payload: dict[str, Any]) -> str:
     )
 
 
+def matrix_evidence_class(model: str, profile: dict[str, Any]) -> tuple[str, str]:
+    key = profile["key"]
+    if key == "calibrated_fp8_effective_f":
+        return "calibrated", "FastAFD E2E-derived effective F calibration"
+    if profile["measured_complete_f"]:
+        return "measured", "B200 NVL8 measured complete F + AIC system"
+    if model == "deepseek_v4_pro":
+        return "measured", "Measured MegaMoE module + AIC HYBRID system"
+    if "projected" in key:
+        return "projected", "AIC HYBRID target-shape projection"
+    return "native", "Native AIC / same-shape table HYBRID"
+
+
+def matrix_aic_record(row: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+    row_class, evidence_class = matrix_evidence_class(row["model"], profile)
+    nextn = int(row["nextn"])
+    mtp = "Off" if nextn == 0 else f"N={nextn}; accepted={row['accepted_drafts']:.3f}; P={row['progress']:.3f}"
+    return {
+        "model": row["model"],
+        "model_label": MODEL_LABELS[row["model"]],
+        "workload": row["workload"],
+        "scenario": row["scenario"],
+        "mtp": mtp,
+        "nextn": nextn,
+        "progress": float(row["progress"]),
+        "track": TRACK_LABELS[(row["model"], profile["key"])],
+        "profile": profile["key"],
+        "primary": bool(profile["primary"]),
+        "evidence": row["evidence"],
+        "evidence_class": evidence_class,
+        "row_class": row_class,
+        "attention": ATTENTION_SHORT[row["model"]],
+        "f_precision": row["quant"]["f_moe"],
+        "total_gpus": TOTAL_GPUS,
+        "a_nodes": int(row["a_nodes"]),
+        "f_nodes": int(row["f_nodes"]),
+        "a_tp": int(row["a_tp"]),
+        "batch_per_a_gpu": int(row["batch_per_a_gpu"]),
+        "microbatches": int(row["microbatches"]),
+        "a_ms": float(row["a_full_work_ms"]),
+        "f_ms": float(row["f_full_work_ms"]),
+        "agg_round_ms": float(row["agg"]["raw_round_ms"]),
+        "afd_round_ms": float(row["raw_round_ms"]),
+        "effective_tpot_ms": float(row["effective_tpot_ms"]),
+        "agg_tps_gpu": float(row["agg"]["cluster_output_tokens_s_gpu"]),
+        "afd_tps_gpu": float(row["output_tokens_s_gpu"]),
+        "afd_over_agg": float(row["afd_over_agg"]),
+        "bottleneck": row["pipeline_bottleneck"],
+    }
+
+
+def matrix_public_record(model: str, workload: str, reference: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "model": model,
+        "model_label": MODEL_LABELS[model],
+        "workload": workload,
+        "scenario": "no_mtp",
+        "mtp": "Off",
+        "nextn": 0,
+        "progress": 1.0,
+        "track": "FastAFD silicon",
+        "profile": "published_fastafd",
+        "primary": False,
+        "evidence": "FastAFD published silicon throughput",
+        "evidence_class": "Published FastAFD silicon",
+        "row_class": "public",
+        "attention": ATTENTION_SHORT[model],
+        "f_precision": "FP8 block",
+        "total_gpus": int(reference["total_gpus"]),
+        "a_nodes": int(reference["a_nodes"]),
+        "f_nodes": int(reference["f_nodes"]),
+        "a_tp": 1,
+        "batch_per_a_gpu": int(reference["afd_batch_a_gpu"]),
+        "microbatches": 2,
+        "a_ms": None,
+        "f_ms": None,
+        "agg_round_ms": float(reference["baseline_step_ms"]),
+        "afd_round_ms": float(reference["afd_step_ms"]),
+        "effective_tpot_ms": float(reference["afd_step_ms"]),
+        "agg_tps_gpu": float(reference["baseline_tps_gpu"]),
+        "afd_tps_gpu": float(reference["afd_tps_gpu"]),
+        "afd_over_agg": float(reference["speedup"]),
+        "bottleneck": "not published",
+    }
+
+
+def complete_matrix_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    model_meta = {model["key"]: model for model in payload["models"]}
+    minimax_locked = minimax_m25_rows(payload)
+    minimax_profile_rows = {
+        "calibrated_fp8_effective_f": "calibrated",
+        "measured_fp8_complete_f": "measured",
+        "generic_fp8": "generic",
+    }
+    records: list[dict[str, Any]] = []
+    for model in ALL_MODEL_LINK_ORDER:
+        meta = model_meta[model]
+        for workload in CONTEXTS:
+            reference = FASTAFD_REFERENCE.get(model, {}).get(workload)
+            if reference is not None:
+                records.append(matrix_public_record(model, workload, reference))
+            if model == "minimax_m25":
+                for profile in meta["precision_profiles"]:
+                    row = minimax_locked[workload][minimax_profile_rows[profile["key"]]]
+                    records.append(matrix_aic_record(row, profile))
+                continue
+            for scenario in meta["scenarios"]:
+                for profile in meta["precision_profiles"]:
+                    candidates = [
+                        row
+                        for row in payload["rows"]
+                        if row["model"] == model
+                        and row["workload"] == workload
+                        and row["scenario"] == scenario["name"]
+                        and row["precision_profile"] == profile["key"]
+                    ]
+                    if not candidates:
+                        continue
+                    row = max(candidates, key=lambda value: value["output_tokens_s_gpu"])
+                    records.append(matrix_aic_record(row, profile))
+    return records
+
+
+def render_complete_matrix(records: list[dict[str, Any]]) -> str:
+    rows = []
+    classes = []
+    for record in records:
+        ratio = record["afd_over_agg"]
+        config = (
+            f"{record['a_nodes']}A:{record['f_nodes']}F / TP{record['a_tp']} / "
+            f"b{record['batch_per_a_gpu']} / MB{record['microbatches']}"
+        )
+        rows.append(
+            [
+                esc(record["model_label"]),
+                record["workload"].upper(),
+                esc(record["mtp"]),
+                esc(record["track"] + (" ★" if record["primary"] else "")),
+                esc(record["profile"]),
+                esc(record["evidence_class"]),
+                esc(record["attention"]),
+                esc(record["f_precision"]),
+                str(record["total_gpus"]),
+                esc(config),
+                fmt(record["a_ms"], 3) if record["a_ms"] is not None else "—",
+                fmt(record["f_ms"], 3) if record["f_ms"] is not None else "—",
+                fmt(record["agg_round_ms"], 3),
+                fmt(record["afd_round_ms"], 3),
+                fmt(record["effective_tpot_ms"], 3),
+                fmt(record["agg_tps_gpu"], 1),
+                fmt(record["afd_tps_gpu"], 1),
+                f'<span class="{"good" if ratio > 1 else "bad"}">{ratio:.3f}×</span>',
+                esc(record["bottleneck"]),
+            ]
+        )
+        classes.append(record["row_class"])
+    return (
+        "<h2>Complete simulation and measurement matrix</h2>"
+        f'<div class="callout"><strong>{len(records)} comparable result rows.</strong> Each AIC row is the '
+        "highest-throughput "
+        "feasible grid point for one exact model × context × MTP scenario × precision/evidence profile. "
+        "MiniMax-M2.5 is the exception: its three AIC rows stay locked to the public 17A:1F workload so the "
+        "calibrated, NVL8-measured-F, and generic tracks remain directly comparable. FastAFD rows are published "
+        "silicon points, not AIC grid winners. The GPU column matters: public Qwen uses 32/48 GPUs, while the AIC "
+        "cross-model study and all MiniMax-M2.5 rows use 72 GPUs.</div>"
+        + '<p class="small"><strong>Reading the times.</strong> A and F are full raw-round stage work and are '
+        "pipelined, not added. For MTP, raw-round time includes q=N+1 verification work; effective TPOT divides "
+        "that round by expected committed-token progress P. Green rows are public silicon, amber is calibrated, "
+        "pink contains measured kernel/stage input, and violet is projected.</p>"
+        + table(
+            [
+                "Model",
+                "ISL",
+                "MTP / progress",
+                "Result track",
+                "Exact profile",
+                "Evidence class",
+                "Attention",
+                "F precision",
+                "GPUs",
+                "AFD config",
+                "A work (ms)",
+                "F work (ms)",
+                "AGG round (ms)",
+                "AFD round (ms)",
+                "AFD effective TPOT (ms)",
+                "AGG tok/s/GPU",
+                "AFD tok/s/GPU",
+                "AFD/AGG",
+                "AFD bottleneck",
+            ],
+            rows,
+            classes=classes,
+            wrapper_class="matrix",
+        )
+    )
+
+
 def render_index(
     payload: dict[str, Any],
     selected: dict[str, dict[str, dict[str, dict[str, Any]]]],
     mocker: dict[str, Any],
+    complete_matrix: list[dict[str, Any]],
 ) -> str:
     nav = (
         '<div class="nav"><span class="pill">Cross-model summary</span>'
@@ -1508,6 +1775,7 @@ def render_index(
         "policy is FP4 first, then FP8, then BF16; a lower-precision result is never compared against a "
         "higher-precision baseline.</div>"
     )
+    body += render_complete_matrix(complete_matrix)
     if any(model["key"] == "minimax_m25" for model in payload.get("models", [])):
         body += minimax_m25_index_section(payload)
     body += "<h2>1. Cross-model AFD result</h2>"
@@ -1707,6 +1975,7 @@ def main() -> int:
     payload = merge_payload(base, overlays)
     mocker = json.loads(args.mocker.resolve().read_text(encoding="utf-8"))
     selected = select_pairs(payload)
+    complete_matrix = complete_matrix_records(payload)
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1719,7 +1988,7 @@ def main() -> int:
         report, summary = render_model(model, payload, selected[model], mocker)
         (output_dir / f"{model}.html").write_text(report, encoding="utf-8")
         summaries.append(summary)
-    (output_dir / "index.html").write_text(render_index(payload, selected, mocker), encoding="utf-8")
+    (output_dir / "index.html").write_text(render_index(payload, selected, mocker, complete_matrix), encoding="utf-8")
     (output_dir / "summary.json").write_text(
         json.dumps(
             {
@@ -1727,6 +1996,7 @@ def main() -> int:
                 "base_code": payload["code"],
                 "overlays": payload.get("applied_overlays", []),
                 "dynamo": {"branch": mocker["dynamo_branch"], "commit": mocker["dynamo_commit"]},
+                "complete_matrix": complete_matrix,
                 "models": summaries,
             },
             indent=2,
