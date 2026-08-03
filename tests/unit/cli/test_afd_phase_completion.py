@@ -800,6 +800,38 @@ def test_afd_serial_pipeline_cycle_has_no_overlap(monkeypatch):
     assert comm_hidden is False
 
 
+def test_afd_conservative_pipeline_needs_two_microbatches(monkeypatch):
+    metrics = _fake_phase_metrics(t_a_layer=1.0, t_f_layer=2.0, balance_ratio=0.5)
+    session = _build_afd_session_with_phase_metrics(
+        monkeypatch,
+        prefill_metrics=metrics,
+        decode_metrics=metrics,
+    )
+    session._afd_config.pipeline_model = "conservative"
+    session._afd_config.num_microbatches = 1
+
+    cycle, comm_hidden = session._pipeline_tcycle(1.0, 2.0, 0.5, 0.25)
+
+    assert cycle == pytest.approx(3.75)
+    assert comm_hidden is False
+
+
+def test_afd_conservative_pipeline_overlaps_with_two_microbatches(monkeypatch):
+    metrics = _fake_phase_metrics(t_a_layer=1.0, t_f_layer=2.0, balance_ratio=0.5)
+    session = _build_afd_session_with_phase_metrics(
+        monkeypatch,
+        prefill_metrics=metrics,
+        decode_metrics=metrics,
+    )
+    session._afd_config.pipeline_model = "conservative"
+    session._afd_config.num_microbatches = 2
+
+    cycle, comm_hidden = session._pipeline_tcycle(1.0, 2.0, 0.5, 0.25)
+
+    assert cycle == pytest.approx(2.25)
+    assert comm_hidden is False
+
+
 def test_afd_serial_pipeline_global_step_is_strict_stage_sum(monkeypatch):
     metrics = _fake_phase_metrics(t_a_layer=1.0, t_f_layer=2.0, balance_ratio=0.5)
     session = _build_afd_session_with_phase_metrics(

@@ -923,6 +923,7 @@ class AFDInferenceSession:
         backend: BaseBackend,
         afd_config: config.AFDConfig,
         afd_moe_time_ms: float | None = None,
+        decode_stride: int | None = None,
     ) -> None:
         self._model_path = model_path
         self._a_model_config = a_model_config
@@ -938,6 +939,9 @@ class AFDInferenceSession:
         if afd_moe_time_ms is not None and (not math.isfinite(afd_moe_time_ms) or afd_moe_time_ms <= 0):
             raise ValueError("afd_moe_time_ms must be finite and > 0.")
         self._afd_moe_time_ms = afd_moe_time_ms
+        self._decode_stride = self._AFD_DECODE_STRIDE if decode_stride is None else int(decode_stride)
+        if self._decode_stride < 1:
+            raise ValueError("decode_stride must be >= 1.")
 
     # ------------------------------------------------------------------ #
     # Private helpers
@@ -1159,8 +1163,15 @@ class AFDInferenceSession:
         cfg = self._afd_config
         num_microbatches = max(int(cfg.num_microbatches or 1), 1)
         t_c = t_a2f + t_f2a
+        serial_cycle = t_a + t_a2f + t_f + t_f2a
+
+        def conservative_cycle() -> float:
+            if num_microbatches < 2:
+                return serial_cycle
+            return max(t_a + t_a2f, t_f + t_f2a)
+
         if cfg.pipeline_model == "serial":
-            return t_a + t_a2f + t_f + t_f2a, False
+            return serial_cycle, False
         if cfg.pipeline_model == "optimistic":
             # Need ≥ 2 + t_c / max(t_a, t_f) in-flight microbatches to
             # hide the network stage behind compute.  Equivalent to the
@@ -1174,12 +1185,12 @@ class AFDInferenceSession:
                     num_microbatches,
                     min_m,
                 )
-                return max(t_a + t_a2f, t_f + t_f2a), False
+                return conservative_cycle(), False
             t_cycle = max(t_a, t_f, t_c)
             comm_hidden = t_c <= max(t_a, t_f)
             return t_cycle, comm_hidden
         if cfg.pipeline_model == "conservative":
-            return max(t_a + t_a2f, t_f + t_f2a), False
+            return conservative_cycle(), False
         raise ValueError(f"Unsupported AFD pipeline_model: {cfg.pipeline_model!r}.")
 
     def _pipeline_global_step_latency(
@@ -1344,7 +1355,7 @@ class AFDInferenceSession:
         evaluated on the full per-layer time, not on the compute-only
         time.
         """
-        stride = self._AFD_DECODE_STRIDE
+        stride = self._decode_stride
 
         t_a_layer_sum = 0.0
         t_f_layer_sum = 0.0

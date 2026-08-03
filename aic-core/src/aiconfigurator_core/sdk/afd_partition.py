@@ -68,7 +68,11 @@ def build_afd_ops_partition(
 
     for op in op_sequence:
         side = _classify_op(op, allow_unknown_ops=allow_unknown_ops, unknown_side=unknown_side)
-        _append_partition_op(partition, op, side, boundary_on_attn=boundary_on_attn)
+        partition_op = op
+        if isinstance(op, operations.OverlapOp) and side != "skip":
+            partition_op, skipped_ops = _without_skipped_overlap_ops(op)
+            partition.skipped_ops.extend(skipped_ops)
+        _append_partition_op(partition, partition_op, side, boundary_on_attn=boundary_on_attn)
 
     return partition
 
@@ -170,6 +174,42 @@ def _classify_inner_overlap_op(
     return _classify_by_markers(op, _op_name(op), allow_unknown_ops=allow_unknown_ops, unknown_side=unknown_side)
 
 
+def _without_skipped_overlap_ops(
+    op: operations.OverlapOp,
+) -> tuple[operations.OverlapOp, list[operations.Operation]]:
+    """Return an AFD-only overlap view without model-internal communication."""
+
+    skipped: list[operations.Operation] = []
+
+    def filter_group(group: list[operations.Operation]) -> list[operations.Operation]:
+        filtered: list[operations.Operation] = []
+        for inner_op in group:
+            if isinstance(inner_op, operations.OverlapOp):
+                filtered_overlap, nested_skipped = _without_skipped_overlap_ops(inner_op)
+                filtered.append(filtered_overlap)
+                skipped.extend(nested_skipped)
+                continue
+            if _is_skipped_model_internal_op(inner_op, _op_name(inner_op)):
+                skipped.append(inner_op)
+                continue
+            filtered.append(inner_op)
+        return filtered
+
+    group_a = filter_group(list(getattr(op, "_group_a", [])))
+    group_b = filter_group(list(getattr(op, "_group_b", [])))
+    if not skipped:
+        return op, []
+    return (
+        operations.OverlapOp(
+            op._name,
+            group_a=group_a,
+            group_b=group_b,
+            seq_split=int(getattr(op, "_seq_split", 1)),
+        ),
+        skipped,
+    )
+
+
 def _validate_phase(phase: str) -> AFDPhase:
     if phase == "context":
         return "context"
@@ -194,17 +234,6 @@ def _unknown_or_default(
 
 
 def _is_skipped_model_internal_op(op: operations.Operation, name: str) -> bool:
-    # TODO(afd, Phase-2): when an ``MoEDispatch`` op (name contains ``"dispatch"``)
-    # appears inside an ``OverlapOp`` (e.g. ``generation_moe_overlap``), this
-    # skip-list only excludes it from the overlap *classification vote* --
-    # its cost is still folded into the OverlapOp's F-pool latency via
-    # ``OverlapOp.query()`` and stays invisible to the AFD comm ops /
-    # ``_pipeline_tcycle``. That hides the MoE EP all-to-all from the AFD
-    # pipeline overlap math, so contention between the MoE all-to-all and
-    # the cross-pool A<->F transfer on the same NIC fabric is silently
-    # dropped. Surface ``MoEDispatch`` cost as an additional contribution
-    # to ``t_c_layer`` (or split the OverlapOp into compute + dispatch
-    # sub-stages) when AFD is active, instead of folding it into ``t_f``.
     if isinstance(op, (operations.CustomAllReduce, operations.P2P, operations.NCCL)):
         return True
 

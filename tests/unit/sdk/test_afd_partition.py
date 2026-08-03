@@ -95,9 +95,36 @@ def test_build_afd_ops_partition_moe_overlap_stays_atomic_on_f_worker():
     partition = build_afd_ops_partition(model, phase="generation")
 
     assert _names(partition.attn_ops) == ["generation_add_norm_2", "generation_moe_reduce_add"]
-    assert partition.ffn_ops == [overlap]
+    assert len(partition.ffn_ops) == 1
+    filtered_overlap = partition.ffn_ops[0]
+    assert isinstance(filtered_overlap, operations.OverlapOp)
+    assert filtered_overlap is not overlap
+    assert _names(filtered_overlap._group_a) == ["generation_router_gemm", "generation_moe"]
+    assert _names(filtered_overlap._group_b) == [
+        "generation_shared_gate_up_gemm",
+        "generation_shared_act_gate",
+        "generation_shared_ffn2_gemm",
+    ]
+    assert _names(partition.skipped_ops) == [
+        "generation_moe_pre_dispatch",
+        "generation_moe_post_dispatch",
+    ]
     assert _names(partition.boundary_ops) == ["generation_add_norm_2", "generation_moe_reduce_add"]
     assert all(inner not in partition.attn_ops + partition.ffn_ops for inner in routed_ops + shared_ops)
+
+
+def test_build_afd_ops_partition_keeps_unfiltered_overlap_identity():
+    overlap = operations.OverlapOp(
+        "generation_shared_moe_overlap",
+        group_a=[_NamedOp("generation_router_gemm"), _NamedOp("generation_moe")],
+        group_b=[_NamedOp("generation_shared_ffn2_gemm")],
+    )
+    model = _Model(generation_ops=[overlap])
+
+    partition = build_afd_ops_partition(model, phase="generation")
+
+    assert partition.ffn_ops == [overlap]
+    assert partition.skipped_ops == []
 
 
 def test_build_afd_ops_partition_attention_overlap_stays_atomic_on_a_worker():

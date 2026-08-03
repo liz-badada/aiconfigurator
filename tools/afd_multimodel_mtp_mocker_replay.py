@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay selected multi-model AFD/MTP service points with Dynamo Mocker."""
+"""Replay fixed-pool AIC winners with Dynamo Mocker."""
 
 from __future__ import annotations
 
@@ -11,25 +11,17 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from render_afd_multimodel_mtp_report import load_payload, primary_mtp, primary_profile, select_best
 
 BLOCK_SIZE = 64
-OUTPUT_TOKENS = 64
-HEADLINE_MTP = {
-    "qwen3_235b": "eagle3_n3",
-    "minimax_m3": "mtp_n1_r70",
-    "deepseek_v4_flash": "mtp_n2_r70",
-    "deepseek_v4_pro": "mtp_n2_r70",
-}
-REPRODUCTION_CASES = {
-    "minimax_m25": {
-        "8k": {"a_nodes": 17, "f_nodes": 1, "a_tp": 1, "batch_per_a_gpu": 72, "microbatches": 2},
-        "16k": {"a_nodes": 17, "f_nodes": 1, "a_tp": 1, "batch_per_a_gpu": 36, "microbatches": 2},
-    }
-}
+DEFAULT_OUTPUT_TOKENS = 64
+DEFAULT_TOTAL_GPUS = (72,)
+DEFAULT_WORKLOADS = ("8k", "16k")
+CONTEXT_LENGTHS = {"8k": 8192, "16k": 16384}
 
 
 def equal_conditional_rate(nextn: int, accepted_drafts: float) -> float:
-    """Solve sum(r**i, i=1..nextn) == accepted_drafts."""
+    """Find a constant conditional accept rate with the requested mean progress."""
     low, high = 0.0, 1.0
     for _ in range(80):
         middle = (low + high) / 2
@@ -41,98 +33,16 @@ def equal_conditional_rate(nextn: int, accepted_drafts: float) -> float:
     return (low + high) / 2
 
 
-def evidence_for(payload: dict[str, Any], model: str) -> str:
-    model_meta = next(value for value in payload["models"] if value["key"] == model)
-    profiles = [profile for profile in model_meta["precision_profiles"] if profile["primary"]]
-    if len(profiles) != 1:
-        raise ValueError(f"expected exactly one primary precision for {model}, got {len(profiles)}")
-    return profiles[0]["evidence"]
-
-
-def row_key(row: dict[str, Any]) -> tuple:
-    return (
-        row["model"],
-        row["workload"],
-        row["evidence"],
-        row["a_nodes"],
-        row["f_nodes"],
-        row["a_tp"],
-        row["batch_per_a_gpu"],
-        row["microbatches"],
-    )
-
-
-def select_pairs(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = payload["rows"]
-    selected: list[dict[str, Any]] = []
-    for model, mtp_name in HEADLINE_MTP.items():
-        evidence = evidence_for(payload, model)
-        for workload in ("8k", "16k"):
-            mtp_rows = [
-                row
-                for row in rows
-                if row["model"] == model
-                and row["workload"] == workload
-                and row["scenario"] == mtp_name
-                and row["evidence"] == evidence
-            ]
-            mtp = max(mtp_rows, key=lambda row: row["output_tokens_s_gpu"])
-            no_mtp_rows = [row for row in rows if row["scenario"] == "no_mtp" and row_key(row) == row_key(mtp)]
-            if len(no_mtp_rows) != 1:
-                raise ValueError(f"expected one matched no-MTP row for {model}/{workload}, got {len(no_mtp_rows)}")
-            selected.append({"model": model, "workload": workload, "no_mtp": no_mtp_rows[0], "mtp": mtp})
-    return selected
-
-
-def select_reproduction_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    selected = []
-    for model, workloads in REPRODUCTION_CASES.items():
-        evidence = evidence_for(payload, model)
-        for workload, contract in workloads.items():
-            matches = [
-                row
-                for row in payload["rows"]
-                if row["model"] == model
-                and row["workload"] == workload
-                and row["scenario"] == "no_mtp"
-                and row["evidence"] == evidence
-                and all(row[key] == value for key, value in contract.items())
-            ]
-            if len(matches) != 1:
-                raise ValueError(f"expected one reproduction row for {model}/{workload}, got {len(matches)}")
-            selected.append(matches[0])
-    return selected
-
-
-def apply_sweep_overlays(payload: dict[str, Any], overlays: list[Path]) -> dict[str, Any]:
-    merged = dict(payload)
-    merged["rows"] = list(payload["rows"])
-    merged["models"] = list(payload.get("models", []))
-    merged["failures"] = list(payload.get("failures", []))
-    merged["overlays"] = []
-    for path in overlays:
-        overlay = json.loads(path.resolve().read_text(encoding="utf-8"))
-        model_keys = {model["key"] for model in overlay.get("models", [])}
-        merged["rows"] = [row for row in merged["rows"] if row["model"] not in model_keys] + overlay["rows"]
-        merged["models"] = [model for model in merged["models"] if model["key"] not in model_keys] + overlay.get(
-            "models", []
-        )
-        merged["failures"] = [row for row in merged["failures"] if row.get("model") not in model_keys] + overlay.get(
-            "failures", []
-        )
-        merged["overlays"].append({"path": str(path.resolve()), "models": sorted(model_keys), "code": overlay["code"]})
-    return merged
-
-
 def write_profile(
     path: Path,
     *,
     context: int,
+    output_tokens: int,
     local_batch: int,
     raw_round_ms: float,
     metadata: dict[str, Any],
 ) -> None:
-    max_context = context + OUTPUT_TOKENS
+    max_context = context + output_tokens
     np.savez(
         path,
         prefill_isl=np.asarray([0.0, float(local_batch * context)]),
@@ -144,38 +54,72 @@ def write_profile(
     )
 
 
+def compact_source(row: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "system_kind",
+        "model",
+        "workload",
+        "scenario",
+        "precision_profile",
+        "total_gpus",
+        "used_gpus",
+        "idle_gpus",
+        "world",
+        "tp",
+        "dp",
+        "replicas",
+        "unit_gpus",
+        "afd_replicas",
+        "a_gpus",
+        "f_gpus",
+        "a_tp",
+        "batch_per_a_gpu",
+        "microbatches",
+        "cluster_concurrency",
+        "raw_round_ms",
+        "effective_tpot_ms",
+        "output_tokens_s",
+        "backend_contract",
+    )
+    return {key: row[key] for key in keys if key in row}
+
+
+def worker_shape(row: dict[str, Any]) -> tuple[int, int, int]:
+    if row["system_kind"] == "agg":
+        return int(row["replicas"]), int(row["global_batch_per_replica"]), int(row["cluster_concurrency"])
+    return int(row["afd_replicas"]), int(row["global_requests"]), int(row["cluster_concurrency"])
+
+
 def replay_case(
     *,
     dynamo: Path,
     output_dir: Path,
-    case_id: str,
+    row: dict[str, Any],
     context: int,
-    global_requests: int,
-    workers: int,
-    worker_batch: int,
-    raw_round_ms: float,
     nextn: int,
     accepted_drafts: float | None,
-    source: dict[str, Any],
-    topology: str,
+    output_tokens: int,
     waves: int,
 ) -> dict[str, Any]:
+    workers, worker_batch, global_requests = worker_shape(row)
+    case_id = f"{row['model']}_{row['workload']}_{row['total_gpus']}gpu_{row['scenario']}_{row['system_kind']}"
     profile = output_dir / f"{case_id}.npz"
     report = output_dir / f"{case_id}.json"
+    source = compact_source(row)
     write_profile(
         profile,
         context=context,
+        output_tokens=output_tokens,
         local_batch=worker_batch,
-        raw_round_ms=raw_round_ms,
+        raw_round_ms=float(row["raw_round_ms"]),
         metadata={
-            "schema": "aic.afd-multimodel-mtp-fixed-replay.v1",
+            "schema": "aic.afd-fixed-pool-mocker-profile.v2",
             "case_id": case_id,
-            "service_contract": "raw full-resident decode-round wall time",
-            "topology": topology,
+            "service_contract": "one AIC service unit represented as one virtual worker",
             "source": source,
         },
     )
-    blocks_per_sequence = math.ceil((context + OUTPUT_TOKENS) / BLOCK_SIZE) + 2
+    blocks_per_sequence = math.ceil((context + output_tokens) / BLOCK_SIZE) + 2
     engine_args: dict[str, Any] = {
         "engine_type": "vllm",
         "num_gpu_blocks": worker_batch * blocks_per_sequence,
@@ -203,7 +147,7 @@ def replay_case(
         "--input-tokens",
         str(context),
         "--output-tokens",
-        str(OUTPUT_TOKENS),
+        str(output_tokens),
         "--request-count",
         str(global_requests * waves),
         "--replay-concurrency",
@@ -230,29 +174,30 @@ def replay_case(
     if completed.returncode:
         raise RuntimeError(f"Mocker failed for {case_id}:\n{completed.stdout[-8000:]}")
     result = json.loads(report.read_text(encoding="utf-8"))
-    expected_tpot_ms = (
-        float(source["agg"]["effective_tpot_ms"]) if topology == "agg" else float(source["effective_tpot_ms"])
-    )
+    expected_tpot_ms = float(row["effective_tpot_ms"])
+    expected_output_tps = float(row["output_tokens_s"])
     return {
         "case_id": case_id,
-        "model": source["model"],
-        "workload": source["workload"],
-        "scenario": source["scenario"],
-        "topology": topology,
-        "context": context,
+        "model": row["model"],
+        "workload": row["workload"],
+        "scenario": row["scenario"],
+        "system_kind": row["system_kind"],
+        "total_gpus": row["total_gpus"],
         "nextn": nextn,
         "conditional_rate_surrogate": conditional_rate,
         "accepted_drafts_target": accepted_drafts,
         "global_requests": global_requests,
         "workers": workers,
         "worker_batch": worker_batch,
-        "raw_round_ms": raw_round_ms,
+        "raw_round_ms": row["raw_round_ms"],
         "profile": str(profile),
         "report": str(report),
         "command": command,
         "completed_requests": result["completed_requests"],
         "duration_ms": result["duration_ms"],
         "output_throughput_tok_s": result["output_throughput_tok_s"],
+        "expected_output_throughput_tok_s": expected_output_tps,
+        "output_throughput_error_pct": (result["output_throughput_tok_s"] / expected_output_tps - 1.0) * 100.0,
         "mean_tpot_ms": result["mean_tpot_ms"],
         "expected_steady_state_tpot_ms": expected_tpot_ms,
         "mean_tpot_error_pct": (result["mean_tpot_ms"] / expected_tpot_ms - 1.0) * 100.0,
@@ -265,107 +210,115 @@ def replay_case(
     }
 
 
+def selected_rows(
+    payload: dict[str, Any],
+    *,
+    models: list[str],
+    workloads: list[str],
+    total_gpus: list[int],
+    speed_floor: float,
+) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
+    selected = []
+    for model_key in models:
+        model = payload["models"][model_key]
+        precision = primary_profile(model)["key"]
+        mtp = primary_mtp(model)
+        scenarios = [
+            next(scenario for scenario in model["scenarios"] if scenario["name"] == "no_mtp"),
+            mtp,
+        ]
+        for workload in workloads:
+            for total in total_gpus:
+                for scenario in scenarios:
+                    rows = []
+                    for system_kind in ("agg", "afd"):
+                        row = select_best(
+                            payload,
+                            model=model_key,
+                            workload=workload,
+                            scenario=scenario["name"],
+                            precision=precision,
+                            total_gpus=total,
+                            system_kind=system_kind,
+                            speed_floor=speed_floor,
+                        )
+                        if row is None:
+                            raise ValueError(
+                                f"no {system_kind} winner for {model_key}/{workload}/{scenario['name']}/{total} GPU"
+                            )
+                        rows.append(row)
+                    selected.extend((model, scenario, row) for row in rows)
+    return selected
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--sweep", type=Path, required=True)
-    parser.add_argument("--overlay-sweep", type=Path, action="append", default=[])
+    parser.add_argument("--sweep", type=Path, nargs="+", required=True)
     parser.add_argument("--dynamo", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--models", nargs="+")
+    parser.add_argument("--workloads", nargs="+", default=list(DEFAULT_WORKLOADS))
+    parser.add_argument("--total-gpus", nargs="+", type=int, default=list(DEFAULT_TOTAL_GPUS))
+    parser.add_argument("--speed-floor", type=float, default=30.0)
+    parser.add_argument("--output-tokens", type=int, default=DEFAULT_OUTPUT_TOKENS)
     parser.add_argument("--waves", type=int, default=1)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.waves < 1 or args.output_tokens < 1:
+        parser.error("--waves and --output-tokens must be positive")
+    return args
 
 
 def main() -> int:
     args = parse_args()
-    sweep = apply_sweep_overlays(
-        json.loads(args.sweep.resolve().read_text(encoding="utf-8")),
-        args.overlay_sweep,
-    )
+    payload = load_payload(args.sweep)
+    models = args.models or sorted(payload["models"])
+    unknown = sorted(set(models) - set(payload["models"]))
+    if unknown:
+        raise ValueError(f"models not present in sweep: {', '.join(unknown)}")
     dynamo = args.dynamo.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    results: list[dict[str, Any]] = []
-    for pair in select_pairs(sweep):
-        for scenario_name in ("no_mtp", "mtp"):
-            afd = pair[scenario_name]
-            context = int(afd["context"])
-            global_requests = int(afd["global_requests"])
-            nextn = int(afd["nextn"])
-            accepted = afd["accepted_drafts"]
-            agg = afd["agg"]
-            variants = (
-                (
-                    "agg",
-                    int(agg["replicas"]),
-                    int(agg["global_batch"]),
-                    float(agg["raw_round_ms"]),
-                    agg,
-                ),
-                ("afd", 1, global_requests, float(afd["raw_round_ms"]), afd),
-            )
-            for topology, workers, worker_batch, raw_round_ms, source in variants:
-                case_id = f"{pair['model']}_{pair['workload']}_{scenario_name}_{topology}"
-                print(f"running {case_id}", flush=True)
-                results.append(
-                    replay_case(
-                        dynamo=dynamo,
-                        output_dir=output_dir,
-                        case_id=case_id,
-                        context=context,
-                        global_requests=global_requests,
-                        workers=workers,
-                        worker_batch=worker_batch,
-                        raw_round_ms=raw_round_ms,
-                        nextn=nextn,
-                        accepted_drafts=accepted,
-                        source=afd,
-                        topology=topology,
-                        waves=args.waves,
-                    )
-                )
-    for afd in select_reproduction_rows(sweep):
-        context = int(afd["context"])
-        global_requests = int(afd["global_requests"])
-        agg = afd["agg"]
-        variants = (
-            ("agg", int(agg["replicas"]), int(agg["global_batch"]), float(agg["raw_round_ms"])),
-            ("afd", 1, global_requests, float(afd["raw_round_ms"])),
+    results = []
+    for model, scenario, row in selected_rows(
+        payload,
+        models=models,
+        workloads=args.workloads,
+        total_gpus=args.total_gpus,
+        speed_floor=args.speed_floor,
+    ):
+        print(
+            f"running {row['model']} {row['workload']} {row['total_gpus']} GPU {row['scenario']} {row['system_kind']}",
+            flush=True,
         )
-        for topology, workers, worker_batch, raw_round_ms in variants:
-            case_id = f"{afd['model']}_{afd['workload']}_no_mtp_{topology}"
-            print(f"running {case_id}", flush=True)
-            results.append(
-                replay_case(
-                    dynamo=dynamo,
-                    output_dir=output_dir,
-                    case_id=case_id,
-                    context=context,
-                    global_requests=global_requests,
-                    workers=workers,
-                    worker_batch=worker_batch,
-                    raw_round_ms=raw_round_ms,
-                    nextn=0,
-                    accepted_drafts=None,
-                    source=afd,
-                    topology=topology,
-                    waves=args.waves,
-                )
+        results.append(
+            replay_case(
+                dynamo=dynamo,
+                output_dir=output_dir,
+                row=row,
+                context=CONTEXT_LENGTHS[row["workload"]],
+                nextn=int(scenario["nextn"]),
+                accepted_drafts=scenario["accepted_drafts"],
+                output_tokens=args.output_tokens,
+                waves=args.waves,
             )
+        )
     output = output_dir / "mocker_summary.json"
     output.write_text(
         json.dumps(
             {
-                "schema": "aic.afd-multimodel-mtp-mocker.v1",
+                "schema": "aic.afd-fixed-pool-mocker.v2",
                 "dynamo_branch": subprocess.check_output(
                     ("git", "branch", "--show-current"), cwd=dynamo, text=True
                 ).strip(),
                 "dynamo_commit": subprocess.check_output(("git", "rev-parse", "HEAD"), cwd=dynamo, text=True).strip(),
-                "output_tokens_per_request": OUTPUT_TOKENS,
-                "sweep_overlays": sweep.get("overlays", []),
+                "speed_floor_tokps_per_user": args.speed_floor,
+                "output_tokens_per_request": args.output_tokens,
+                "waves": args.waves,
+                "sweep_sources": payload["sources"],
                 "profile_note": (
-                    "AIC supplies the fixed full-resident raw service time. Mocker validates routing, "
-                    "request lifecycle, finite-wave tails, and stochastic MTP burst accounting; it does not "
-                    "re-estimate attention or MoE kernels."
+                    "AIC supplies one fixed service unit's raw decode-round time. Mocker validates unit replication, "
+                    "round-robin routing, request lifecycle, finite-wave tails, and stochastic MTP burst accounting; "
+                    "it does not re-estimate attention or MoE kernels."
                 ),
                 "results": results,
             },
