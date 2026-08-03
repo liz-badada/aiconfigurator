@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -107,3 +108,72 @@ def test_renderer_requires_exact_measured_moe_on_every_arm(renderer_module):
 
     contracts["AGG + MTP"]["moe_time_source"] = "aic-database"
     assert not renderer_module.all_arms_use_exact_measured_moe(contracts)
+
+
+def test_renderer_summarizes_external_moe_reference_without_calibrating(renderer_module, tmp_path):
+    entries = []
+    for stage, topology, microbatches, latency in (("agg", "ep8", 1, 5.0), ("afd", "4A4F", 2, 8.0)):
+        entries.append(
+            {
+                "model_path": "Model/Test",
+                "system": "b200_sxm",
+                "stage": stage,
+                "topology": topology,
+                "logical_batch_per_source_rank": 96,
+                "mtp_nextn": 3,
+                "microbatches": microbatches,
+                "moe_precision": "w4a8_mxfp4_mxfp8",
+                "latency_ms": latency,
+                "validation": {"matched_speedup": 2.0, "matched_speedup_lower_bound": 1.8},
+            }
+        )
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps({"schema": "aic.afd-moe-stage-profile.v1", "entries": entries}))
+
+    reference = renderer_module.load_moe_reference(path, "https://example.test/reference")
+
+    assert reference["systems"] == ["b200_sxm"]
+    assert reference["entries"] == 2
+    assert reference["path"] is None
+    assert reference["models"]["Model/Test"]["agg_latency_ms"] == [5.0, 5.0]
+    assert reference["models"]["Model/Test"]["afd_latency_ms"] == [8.0, 8.0]
+
+
+def test_renderer_summarizes_mocker_accounting_without_case_artifacts(renderer_module, tmp_path):
+    path = tmp_path / "mocker_summary.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "aic.afd-fixed-pool-mocker.v2",
+                "dynamo_branch": "afd-moe-timing",
+                "dynamo_commit": "a" * 40,
+                "output_tokens_per_request": 128,
+                "waves": 8,
+                "results": [
+                    {
+                        "model": "qwen3_235b",
+                        "workload": "8k",
+                        "total_gpus": 72,
+                        "nextn": 0,
+                        "mean_tpot_error_pct": 0.0,
+                        "finite_wave_efficiency_vs_aic_steady_state": 0.999,
+                    },
+                    {
+                        "model": "qwen3_235b",
+                        "workload": "8k",
+                        "total_gpus": 72,
+                        "nextn": 3,
+                        "mean_tpot_error_pct": -0.2,
+                        "finite_wave_efficiency_vs_aic_steady_state": 0.91,
+                    },
+                ],
+            }
+        )
+    )
+
+    summary = renderer_module.load_mocker_summaries([path])[0]
+
+    assert summary["cases"] == 2
+    assert summary["no_mtp_max_abs_tpot_error_pct"] == 0.0
+    assert summary["mtp_max_abs_tpot_error_pct"] == 0.2
+    assert summary["mtp_finite_efficiency"] == [0.91, 0.91]

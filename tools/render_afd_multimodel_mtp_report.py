@@ -199,6 +199,111 @@ def load_payload(paths: list[Path]) -> dict[str, Any]:
     }
 
 
+def load_moe_reference(path: Path | None, url: str | None = None) -> dict[str, Any] | None:
+    """Summarize a qualified exact MoE-stage profile without using it in the sweep."""
+
+    if path is None:
+        return None
+    resolved = path.resolve()
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if payload.get("schema") != "aic.afd-moe-stage-profile.v1":
+        raise ValueError(f"unsupported MoE reference schema in {resolved}: {payload.get('schema')}")
+    entries = payload.get("entries", [])
+    if not entries:
+        raise ValueError(f"MoE reference contains no entries: {resolved}")
+    systems = sorted({str(entry["system"]) for entry in entries})
+    grouped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        grouped[str(entry["model_path"])].append(entry)
+
+    def value_range(rows: list[dict[str, Any]], getter) -> list[float] | None:
+        values = [float(getter(row)) for row in rows]
+        return [min(values), max(values)] if values else None
+
+    models = {}
+    for model_path, model_entries in grouped.items():
+        agg = [entry for entry in model_entries if entry["stage"] == "agg"]
+        afd = [entry for entry in model_entries if entry["stage"] == "afd"]
+        validation_rows = [entry for entry in agg if entry.get("validation")]
+        models[model_path] = {
+            "entries": len(model_entries),
+            "agg_entries": len(agg),
+            "afd_entries": len(afd),
+            "agg_topologies": sorted({str(entry["topology"]) for entry in agg}),
+            "afd_topologies": sorted({str(entry["topology"]) for entry in afd}),
+            "logical_batches": sorted({int(entry["logical_batch_per_source_rank"]) for entry in model_entries}),
+            "mtp_nextn": sorted({int(entry["mtp_nextn"]) for entry in model_entries}),
+            "microbatches": sorted({int(entry["microbatches"]) for entry in afd}),
+            "precisions": sorted({str(entry["moe_precision"]) for entry in model_entries}),
+            "agg_latency_ms": value_range(agg, lambda entry: entry["latency_ms"]),
+            "afd_latency_ms": value_range(afd, lambda entry: entry["latency_ms"]),
+            "matched_speedup": value_range(validation_rows, lambda entry: entry["validation"]["matched_speedup"]),
+            "matched_speedup_lower_bound": value_range(
+                validation_rows,
+                lambda entry: entry["validation"]["matched_speedup_lower_bound"],
+            ),
+        }
+    return {
+        "schema": payload["schema"],
+        "path": None if url else str(resolved),
+        "profile_filename": resolved.name,
+        "url": url,
+        "systems": systems,
+        "entries": len(entries),
+        "models": models,
+    }
+
+
+def fmt_range(values: list[float] | None, digits: int = 3, suffix: str = "") -> str:
+    if values is None:
+        return "—"
+    low, high = values
+    rendered = f"{low:.{digits}f}" if math.isclose(low, high) else f"{low:.{digits}f}–{high:.{digits}f}"
+    return rendered + suffix
+
+
+def load_mocker_summaries(paths: list[Path]) -> list[dict[str, Any]]:
+    summaries = []
+    for path in paths:
+        payload = json.loads(path.resolve().read_text(encoding="utf-8"))
+        if payload.get("schema") != "aic.afd-fixed-pool-mocker.v2":
+            raise ValueError(f"unsupported Mocker schema in {path}: {payload.get('schema')}")
+        rows = payload.get("results", [])
+        if not rows:
+            raise ValueError(f"Mocker summary contains no results: {path}")
+
+        def selected(nextn: bool) -> list[dict[str, Any]]:
+            return [row for row in rows if (int(row["nextn"]) > 0) == nextn]
+
+        def max_tpot_error(group: list[dict[str, Any]]) -> float | None:
+            return max((abs(float(row["mean_tpot_error_pct"])) for row in group), default=None)
+
+        def efficiency_range(group: list[dict[str, Any]]) -> list[float] | None:
+            values = [float(row["finite_wave_efficiency_vs_aic_steady_state"]) for row in group]
+            return [min(values), max(values)] if values else None
+
+        no_mtp = selected(False)
+        mtp = selected(True)
+        summaries.append(
+            {
+                "filename": path.name,
+                "dynamo_branch": payload["dynamo_branch"],
+                "dynamo_commit": payload["dynamo_commit"],
+                "cases": len(rows),
+                "models": sorted({str(row["model"]) for row in rows}),
+                "workloads": sorted({str(row["workload"]) for row in rows}),
+                "total_gpus": sorted({int(row["total_gpus"]) for row in rows}),
+                "output_tokens": int(payload["output_tokens_per_request"]),
+                "waves": int(payload["waves"]),
+                "no_mtp_max_abs_tpot_error_pct": max_tpot_error(no_mtp),
+                "mtp_max_abs_tpot_error_pct": max_tpot_error(mtp),
+                "no_mtp_finite_efficiency": efficiency_range(no_mtp),
+                "mtp_finite_efficiency": efficiency_range(mtp),
+            }
+        )
+    return summaries
+
+
 def primary_profile(model: dict[str, Any]) -> dict[str, Any]:
     profiles = [profile for profile in model["precision_profiles"] if profile["primary"]]
     if len(profiles) != 1:
@@ -698,7 +803,12 @@ def model_navigation(payload: dict[str, Any], current: str | None = None) -> str
     return '<div class="nav">' + "".join(links) + "</div>"
 
 
-def contract_section(model: dict[str, Any], contract: dict[str, Any], arm_contracts: dict[str, dict[str, str]]) -> str:
+def contract_section(
+    model: dict[str, Any],
+    contract: dict[str, Any],
+    arm_contracts: dict[str, dict[str, str]],
+    moe_reference: dict[str, Any] | None,
+) -> str:
     profile = primary_profile(model)
     mtp = primary_mtp(model)
     measured_moe = all_arms_use_exact_measured_moe(arm_contracts)
@@ -779,10 +889,28 @@ def contract_section(model: dict[str, Any], contract: dict[str, Any], arm_contra
             "model-specific packaged MegaMoE contract in AIC. Both AGG arms and both AFD arms use the same "
             "SGLang MoE kernel shown above; an AFD complete-F measurement is not reused as an AGG kernel time.</div>"
         )
+    if moe_reference is not None:
+        model_reference = moe_reference["models"].get(model["model_path"])
+        if model_reference is not None:
+            reference_system = ", ".join(moe_reference["systems"])
+            section += (
+                '<div class="callout warn"><strong>Separate silicon MoE evidence.</strong> '
+                f"{model_reference['entries']} qualified {esc(reference_system)} exact-stage points exist for this model: "
+                f"AGG latency {fmt_range(model_reference['agg_latency_ms'], suffix=' ms')}; "
+                f"AFD F-stage latency {fmt_range(model_reference['afd_latency_ms'], suffix=' ms')}; "
+                f"colocated DeepEP/MegaMoE conservative lower bound "
+                f"{fmt_range(model_reference['matched_speedup_lower_bound'], suffix='×')}. "
+                f"They are shown as evidence only and are not injected into this {esc(contract['system'])} sweep.</div>"
+            )
     return section
 
 
-def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: float) -> tuple[str, dict[str, Any]]:
+def render_model(
+    payload: dict[str, Any],
+    model: dict[str, Any],
+    speed_floor: float,
+    moe_reference: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]]:
     winners = winners_for_model(payload, model, speed_floor)
     profile = primary_profile(model)
     mtp = primary_mtp(model)
@@ -819,7 +947,7 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
         )
         + "</div>"
     )
-    body += contract_section(model, payload["contract"], arm_contracts)
+    body += contract_section(model, payload["contract"], arm_contracts, moe_reference)
 
     body += "<h2>2. End-to-end fixed-pool performance</h2>"
     throughput = {workload: throughput_series(winners, workload, mtp["name"]) for workload in CONTEXTS}
@@ -1165,14 +1293,133 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
     ), summary
 
 
-def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed_floor: float) -> str:
+def render_index(
+    payload: dict[str, Any],
+    summaries: list[dict[str, Any]],
+    speed_floor: float,
+    moe_reference: dict[str, Any] | None,
+    mocker_summaries: list[dict[str, Any]],
+) -> str:
     body = model_navigation(payload)
     body += (
         '<div class="callout"><strong>Question answered:</strong> for each fixed 16/24/36/48/72-GPU pool, what are '
         "the best matched-backend AGG and AFD layouts, before and after MTP? Ratios compare independently optimized "
         f"arms at ≥{speed_floor:g} committed tokens/s/user.</div>"
     )
-    body += "<h2>1. Backend and model contract</h2>"
+    body += "<h2>1. Evidence boundary</h2>"
+    body += table(
+        ["Layer", "System", "What it supplies", "Used in GB200 E2E sweep"],
+        [
+            [
+                "AIC fixed-pool simulation",
+                esc(payload["contract"]["system"]),
+                "Attention, MoE, communication, memory, A/F pipeline, MTP verification and committed-token accounting",
+                '<span class="good">yes</span>',
+            ],
+            [
+                "External exact MoE-stage reference",
+                esc(", ".join(moe_reference["systems"]) if moe_reference else "not supplied"),
+                "Matched MegaMoE and DeepEP+DeepGEMM latency/correctness/stability evidence",
+                '<span class="neutral">no; different system</span>' if moe_reference else "—",
+            ],
+            [
+                "Dynamo Mocker replay",
+                "logical event simulation",
+                "Worker count, concurrency, request lifecycle, finite-wave and MTP accounting",
+                (
+                    f'<span class="good">yes; {sum(summary["cases"] for summary in mocker_summaries)} cases</span>'
+                    if mocker_summaries
+                    else "Optional validation; it does not replace kernel time"
+                ),
+            ],
+        ],
+        css="wide",
+    )
+    if moe_reference is not None:
+        source = (
+            f'<a href="{esc(moe_reference["url"])}">qualified reference directory</a>'
+            if moe_reference.get("url")
+            else f'<span class="mono">{esc(moe_reference["path"])}</span>'
+        )
+        reference_rows = []
+        for summary in summaries:
+            model_path = payload["models"][summary["model"]]["model_path"]
+            reference = moe_reference["models"].get(model_path)
+            if reference is None:
+                reference_rows.append(
+                    [f'<a href="{summary["model"]}.html">{esc(summary["label"])}</a>', "—", "—", "—", "—", "—"]
+                )
+                continue
+            topology = ", ".join(reference["afd_topologies"])
+            grid = (
+                f"batch {'/'.join(map(str, reference['logical_batches']))}; "
+                f"nextN {'/'.join(map(str, reference['mtp_nextn']))}; "
+                f"microbatch {'/'.join(map(str, reference['microbatches']))}"
+            )
+            reference_rows.append(
+                [
+                    f'<a href="{summary["model"]}.html">{esc(summary["label"])}</a>',
+                    esc(topology),
+                    esc(grid),
+                    fmt_range(reference["agg_latency_ms"], suffix=" ms"),
+                    fmt_range(reference["afd_latency_ms"], suffix=" ms"),
+                    fmt_range(reference["matched_speedup_lower_bound"], suffix="×"),
+                ]
+            )
+        body += (
+            f'<div class="callout warn"><strong>System separation.</strong> The {moe_reference["entries"]} points '
+            f"below are qualified {esc(', '.join(moe_reference['systems']))} silicon measurements from the {source}. "
+            f"They validate the backend implementation but are not used as {esc(payload['contract']['system'])} latency.</div>"
+        )
+        body += table(
+            [
+                "Model",
+                "AFD topology",
+                "Measured grid",
+                "AGG MegaMoE stage latency",
+                "AFD F-stage latency",
+                "DeepEP/MegaMoE conservative bound",
+            ],
+            reference_rows,
+            css="wide",
+        )
+    if mocker_summaries:
+        body += "<h3>Dynamo Mocker accounting checks</h3>"
+        body += table(
+            [
+                "Replay suite",
+                "Coverage",
+                "No-MTP max |TPOT error|",
+                "MTP max |TPOT error|",
+                "No-MTP finite-wave efficiency",
+                "MTP finite-wave efficiency",
+                "Dynamo commit",
+            ],
+            [
+                [
+                    f"{summary['output_tokens']} output tokens × {summary['waves']} wave(s)",
+                    (
+                        f"{summary['cases']} cases; {len(summary['models'])} model(s); "
+                        f"{'/'.join(summary['workloads']).upper()}; "
+                        f"{'/'.join(map(str, summary['total_gpus']))} GPUs"
+                    ),
+                    fmt(summary["no_mtp_max_abs_tpot_error_pct"], 4) + "%",
+                    fmt(summary["mtp_max_abs_tpot_error_pct"], 4) + "%",
+                    fmt_range(summary["no_mtp_finite_efficiency"], suffix="×"),
+                    fmt_range(summary["mtp_finite_efficiency"], suffix="×"),
+                    f'<span class="mono">{esc(summary["dynamo_commit"][:12])}</span>',
+                ]
+                for summary in mocker_summaries
+            ],
+            css="wide",
+        )
+        body += (
+            '<p class="small muted">TPOT compares Mocker with the selected AIC service time. Finite-wave efficiency '
+            "compares completed-token throughput with AIC's saturated steady state. MTP can leave a stochastic partial "
+            "final burst, so the short one-wave throughput is intentionally not treated as a kernel-performance result.</p>"
+        )
+
+    body += "<h2>2. Backend and model contract</h2>"
     backend_rows = []
     for summary in summaries:
         profile = summary["primary_precision"]
@@ -1230,7 +1477,7 @@ def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed
         css="wide",
     )
 
-    body += "<h2>2. 72-GPU headline</h2>"
+    body += "<h2>3. 72-GPU headline</h2>"
     headline_rows = []
     for summary in summaries:
         mtp = summary["primary_mtp"]
@@ -1269,7 +1516,7 @@ def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed
         css="wide",
     )
 
-    body += "<h2>3. Scale trend across fixed GPU pools</h2>"
+    body += "<h2>4. Scale trend across fixed GPU pools</h2>"
     for workload in CONTEXTS:
         for mode, key in (("No MTP", "no_mtp"), ("With MTP", "mtp")):
             series = {}
@@ -1299,7 +1546,7 @@ def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed
                 "each AGG/AFD pair is matched within its model.",
             )
 
-    body += "<h2>4. Complete fixed-pool winner matrix</h2>"
+    body += "<h2>5. Complete fixed-pool winner matrix</h2>"
     matrix_rows = []
     for summary in summaries:
         profile = summary["primary_precision"]
@@ -1341,7 +1588,7 @@ def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed
         css="wide",
     )
 
-    body += "<h2>5. Interpretation boundary</h2>"
+    body += "<h2>6. Interpretation boundary</h2>"
     body += table(
         ["Term", "Meaning"],
         [
@@ -1376,6 +1623,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sweep", type=Path, nargs="+", required=True)
     parser.add_argument("--control-sweep", type=Path, nargs="*", default=[])
+    parser.add_argument("--moe-reference-profile", type=Path)
+    parser.add_argument("--moe-reference-url")
+    parser.add_argument("--mocker-summary", type=Path, nargs="*", default=[])
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--speed-floor", type=float, default=30.0)
     args = parser.parse_args()
@@ -1387,6 +1637,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     payload = load_payload(args.sweep + args.control_sweep)
+    moe_reference = load_moe_reference(args.moe_reference_profile, args.moe_reference_url)
+    mocker_summaries = load_mocker_summaries(args.mocker_summary)
     missing = [model for model in MODEL_ORDER if model not in payload["models"]]
     if missing:
         raise ValueError(f"missing model sweeps: {', '.join(missing)}")
@@ -1394,16 +1646,20 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     summaries = []
     for model_key in MODEL_ORDER:
-        report, summary = render_model(payload, payload["models"][model_key], args.speed_floor)
+        report, summary = render_model(payload, payload["models"][model_key], args.speed_floor, moe_reference)
         (output_dir / f"{model_key}.html").write_text(report, encoding="utf-8")
         summaries.append(summary)
-    (output_dir / "index.html").write_text(render_index(payload, summaries, args.speed_floor), encoding="utf-8")
+    (output_dir / "index.html").write_text(
+        render_index(payload, summaries, args.speed_floor, moe_reference, mocker_summaries), encoding="utf-8"
+    )
     summary = {
         "schema": "aic.afd-fixed-pool-report.v3",
         "speed_floor_tokps_per_user": args.speed_floor,
         "contract": payload["contract"],
-        "sources": payload["sources"],
+        "sources": [Path(source).name for source in payload["sources"]],
         "code": payload["code"],
+        "moe_reference": moe_reference,
+        "mocker_summaries": mocker_summaries,
         "models": summaries,
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")

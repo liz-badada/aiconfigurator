@@ -1,0 +1,1658 @@
+{
+  "code": [
+    {
+      "branch": "pr1323-afd-moe-eval",
+      "commit": "6c814353a89d40e90f383381fd5057184e4f1882",
+      "dirty": false
+    }
+  ],
+  "contract": {
+    "a_tp_grid": [
+      1,
+      2,
+      4
+    ],
+    "afd_moe_profile": null,
+    "afd_moe_profile_policy": "exact model/system/stage/topology/source-batch/MTP/microbatch/layer/precision match; generic AIC fallback is explicit when no point matches",
+    "afd_row_scope": "one AFD service unit; fixed-pool analysis may pack identical units and charges idle GPUs",
+    "afd_service_unit_gpu_grid": [
+      8,
+      12,
+      16,
+      20,
+      24,
+      28,
+      32,
+      36,
+      40,
+      44,
+      48,
+      52,
+      56,
+      60,
+      64,
+      68,
+      72
+    ],
+    "agg_world_rule": "all 4-GPU increments; idle remainder is counted in the fixed total-GPU denominator",
+    "backend": "sglang",
+    "batch_semantics": "batch_per_a_gpu; a_batch_size_per_worker=batch_per_a_gpu*a_tp",
+    "comparison": "At each user-speed floor, AGG and AFD are independently optimized under the same fixed-pool, model, precision, framework, and MoE kernel contract; identical service-unit replicas are allowed and idle GPUs remain in the denominator.",
+    "database_mode": "HYBRID",
+    "decode_stride": 128,
+    "f_node_rule": "all integer node splits: 1 <= F nodes < total nodes",
+    "gpus_per_node": 4,
+    "microbatch_grid": [
+      1,
+      2,
+      4
+    ],
+    "mtp_compute": "verification width q=nextn+1; transformer work=q*L+nextn layer-equivalents",
+    "mtp_progress": "committed output progress=1+expected accepted draft tokens",
+    "pipeline_model": "conservative",
+    "require_measured_moe": false,
+    "scope": "decode only; ISL fixed by workload; OSL=1024; no arrival-process model",
+    "speed_floors_tokps_per_user": [
+      20,
+      30,
+      40,
+      50,
+      60,
+      70,
+      100
+    ],
+    "static_tp_grid": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "system": "gb200",
+    "total_gpu_grid": [
+      16,
+      24,
+      36,
+      48,
+      72
+    ]
+  },
+  "mocker_summaries": [
+    {
+      "cases": 20,
+      "dynamo_branch": "afd-moe-timing",
+      "dynamo_commit": "1075dcc412767fee99d1a317f2b2c85cb6398a03",
+      "filename": "mocker_summary.json",
+      "models": [
+        "deepseek_v4_flash",
+        "deepseek_v4_pro",
+        "minimax_m25",
+        "minimax_m3",
+        "qwen3_235b"
+      ],
+      "mtp_finite_efficiency": [
+        0.5001881421111316,
+        0.722292705549758
+      ],
+      "mtp_max_abs_tpot_error_pct": 3.005052083329174,
+      "no_mtp_finite_efficiency": [
+        0.9962453045942905,
+        0.9981125708063312
+      ],
+      "no_mtp_max_abs_tpot_error_pct": 2.012540090134962e-06,
+      "output_tokens": 16,
+      "total_gpus": [
+        72
+      ],
+      "waves": 1,
+      "workloads": [
+        "8k"
+      ]
+    },
+    {
+      "cases": 4,
+      "dynamo_branch": "afd-moe-timing",
+      "dynamo_commit": "1075dcc412767fee99d1a317f2b2c85cb6398a03",
+      "filename": "mocker_summary.json",
+      "models": [
+        "qwen3_235b"
+      ],
+      "mtp_finite_efficiency": [
+        0.9083729285848334,
+        0.9101737127651964
+      ],
+      "mtp_max_abs_tpot_error_pct": 0.21437190779201032,
+      "no_mtp_finite_efficiency": [
+        0.9997139387480227,
+        0.999763677523428
+      ],
+      "no_mtp_max_abs_tpot_error_pct": 1.581016872975738e-06,
+      "output_tokens": 128,
+      "total_gpus": [
+        72
+      ],
+      "waves": 8,
+      "workloads": [
+        "8k"
+      ]
+    }
+  ],
+  "models": [
+    {
+      "arm_backend_contracts": {
+        "AGG": {
+          "attention_backend": "SGLang 0.5.14 generation attention",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        },
+        "AGG + AFD": {
+          "attention_backend": "SGLang 0.5.14 generation attention",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        },
+        "AGG + AFD + MTP": {
+          "attention_backend": "SGLang 0.5.14 generation attention",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        },
+        "AGG + MTP": {
+          "attention_backend": "SGLang 0.5.14 generation attention",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        }
+      },
+      "attention_backend": "SGLang 0.5.14 generation attention",
+      "attention_type": "Full-context GQA, 64 query heads / 4 KV heads, head_dim=128",
+      "label": "Qwen3-235B-A22B",
+      "model": "qwen3_235b",
+      "moe_backend": "default",
+      "moe_structure": "hidden=4096, expert_inter=1536, 128 routed experts, top-8",
+      "primary_mtp": {
+        "acceptance_basis": "mean committed progress=2.28125 tokens/iteration",
+        "accepted_drafts": 1.28125,
+        "name": "eagle3_n3",
+        "nextn": 3,
+        "primary": true,
+        "progress": 2.28125,
+        "total_gpu_grid": [
+          16,
+          24,
+          36,
+          48,
+          72
+        ],
+        "verification_width": 4
+      },
+      "primary_precision": {
+        "evidence": "W4A8 quantization contract matching the exact MegaMoE profile key",
+        "exact_shape_data": false,
+        "fmha_quant_mode": null,
+        "gemm_quant_mode": null,
+        "key": "mxfp4_mxfp8_megamoe",
+        "kvcache_quant_mode": null,
+        "measured_moe_precision": "w4a8_mxfp4_mxfp8",
+        "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "primary": true,
+        "total_gpu_grid": [
+          16,
+          24,
+          36,
+          48,
+          72
+        ]
+      },
+      "winners": [
+        {
+          "mtp": {
+            "afd_config": "unit 12A:4F (16 GPU) x1; cluster 12A:4F; A-TP1; batch 128/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 5380.306603773585,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 128/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 5644.840950880317,
+            "ratio": 0.9531369706589382
+          },
+          "no_mtp": {
+            "afd_config": "unit 12A:4F (16 GPU) x1; cluster 12A:4F; A-TP4; batch 96/A-GPU (384/A worker); microbatch 2",
+            "afd_tps_gpu": 2637.6516431383957,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 96/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 2904.567189515656,
+            "ratio": 0.9081048813948184
+          },
+          "total_gpus": 16,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:4F (12 GPU) x2; cluster 16A:8F; A-TP1; batch 160/A-GPU (160/A worker); microbatch 2",
+            "afd_tps_gpu": 5382.766299458774,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 128/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 5644.840950880317,
+            "ratio": 0.9535727129068761
+          },
+          "no_mtp": {
+            "afd_config": "unit 20A:4F (24 GPU) x1; cluster 20A:4F; A-TP4; batch 96/A-GPU (384/A worker); microbatch 2",
+            "afd_tps_gpu": 2929.9435229493997,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 96/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 2904.567189515656,
+            "ratio": 1.0087367004369334
+          },
+          "total_gpus": 24,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:4F (12 GPU) x3; cluster 24A:12F; A-TP1; batch 160/A-GPU (160/A worker); microbatch 2",
+            "afd_tps_gpu": 5382.766299458774,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 128/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 5644.840950880317,
+            "ratio": 0.9535727129068761
+          },
+          "no_mtp": {
+            "afd_config": "unit 32A:4F (36 GPU) x1; cluster 32A:4F; A-TP2; batch 96/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 2903.0286529668565,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 96/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 2904.567189515656,
+            "ratio": 0.9994703043694932
+          },
+          "total_gpus": 36,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:4F (12 GPU) x4; cluster 32A:16F; A-TP1; batch 160/A-GPU (160/A worker); microbatch 2",
+            "afd_tps_gpu": 5382.766299458774,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 128/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 5644.840950880317,
+            "ratio": 0.9535727129068761
+          },
+          "no_mtp": {
+            "afd_config": "unit 20A:4F (24 GPU) x2; cluster 40A:8F; A-TP4; batch 96/A-GPU (384/A worker); microbatch 2",
+            "afd_tps_gpu": 2929.9435229493997,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 96/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 2904.567189515656,
+            "ratio": 1.0087367004369334
+          },
+          "total_gpus": 48,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:4F (12 GPU) x6; cluster 48A:24F; A-TP1; batch 160/A-GPU (160/A worker); microbatch 2",
+            "afd_tps_gpu": 5382.766299458774,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 128/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 5644.840950880317,
+            "ratio": 0.9535727129068761
+          },
+          "no_mtp": {
+            "afd_config": "unit 20A:4F (24 GPU) x3; cluster 60A:12F; A-TP4; batch 96/A-GPU (384/A worker); microbatch 2",
+            "afd_tps_gpu": 2929.9435229493997,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 96/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 2904.567189515656,
+            "ratio": 1.0087367004369334
+          },
+          "total_gpus": 72,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 12A:4F (16 GPU) x1; cluster 12A:4F; A-TP4; batch 96/A-GPU (384/A worker); microbatch 2",
+            "afd_tps_gpu": 3528.160845469777,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 64/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 3257.031184764231,
+            "ratio": 1.0832444165637218
+          },
+          "no_mtp": {
+            "afd_config": "unit 12A:4F (16 GPU) x1; cluster 12A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 1537.9371424476392,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 56/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 1728.4353520572445,
+            "ratio": 0.8897857479119091
+          },
+          "total_gpus": 16,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:4F (24 GPU) x1; cluster 20A:4F; A-TP1; batch 80/A-GPU (80/A worker); microbatch 2",
+            "afd_tps_gpu": 3581.2120783981286,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 64/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 3257.031184764231,
+            "ratio": 1.0995326342438334
+          },
+          "no_mtp": {
+            "afd_config": "unit 20A:4F (24 GPU) x1; cluster 20A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 1708.637538792259,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 56/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 1728.4353520572447,
+            "ratio": 0.9885458179032142
+          },
+          "total_gpus": 24,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:4F (12 GPU) x3; cluster 24A:12F; A-TP4; batch 96/A-GPU (384/A worker); microbatch 2",
+            "afd_tps_gpu": 3137.288609063756,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 64/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 3257.031184764231,
+            "ratio": 0.9632356680339421
+          },
+          "no_mtp": {
+            "afd_config": "unit 32A:4F (36 GPU) x1; cluster 32A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 1822.0586930513502,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 56/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 1728.4353520572445,
+            "ratio": 1.054166527479707
+          },
+          "total_gpus": 36,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:4F (24 GPU) x2; cluster 40A:8F; A-TP1; batch 80/A-GPU (80/A worker); microbatch 2",
+            "afd_tps_gpu": 3581.2120783981286,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 64/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 3257.031184764231,
+            "ratio": 1.0995326342438334
+          },
+          "no_mtp": {
+            "afd_config": "unit 44A:4F (48 GPU) x1; cluster 44A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 1877.7132349364513,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 56/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 1728.4353520572447,
+            "ratio": 1.0863659046903495
+          },
+          "total_gpus": 48,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:4F (24 GPU) x3; cluster 60A:12F; A-TP1; batch 80/A-GPU (80/A worker); microbatch 2",
+            "afd_tps_gpu": 3581.2120783981286,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 64/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 3257.031184764231,
+            "ratio": 1.0995326342438334
+          },
+          "no_mtp": {
+            "afd_config": "unit 68A:4F (72 GPU) x1; cluster 68A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 1900.7879693159484,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 56/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 1728.4353520572445,
+            "ratio": 1.0997159755229282
+          },
+          "total_gpus": 72,
+          "workload": "16k"
+        }
+      ]
+    },
+    {
+      "arm_backend_contracts": {
+        "AGG": {
+          "attention_backend": "SGLang 0.5.14 generation attention",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        },
+        "AGG + AFD": {
+          "attention_backend": "SGLang 0.5.14 generation attention",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        },
+        "AGG + AFD + MTP": {
+          "attention_backend": "SGLang 0.5.14 generation attention",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        },
+        "AGG + MTP": {
+          "attention_backend": "SGLang 0.5.14 generation attention",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        }
+      },
+      "attention_backend": "SGLang 0.5.14 generation attention",
+      "attention_type": "Full-context GQA, 48 query heads / 8 KV heads, head_dim=128",
+      "label": "MiniMax-M2.5",
+      "model": "minimax_m25",
+      "moe_backend": "default",
+      "moe_structure": "hidden=3072, expert_inter=1536, 256 routed experts, top-8",
+      "primary_mtp": {
+        "acceptance_basis": "sensitivity only: conditional acceptance=70%",
+        "accepted_drafts": 0.7,
+        "name": "mtp_n1_r70",
+        "nextn": 1,
+        "primary": true,
+        "progress": 1.7,
+        "total_gpu_grid": [
+          16,
+          24,
+          36,
+          48,
+          72
+        ],
+        "verification_width": 2
+      },
+      "primary_precision": {
+        "evidence": "W4A8 quantization contract matching the exact MegaMoE profile key",
+        "exact_shape_data": false,
+        "fmha_quant_mode": "bfloat16",
+        "gemm_quant_mode": "fp8_block",
+        "key": "mxfp4_mxfp8_megamoe",
+        "kvcache_quant_mode": "bfloat16",
+        "measured_moe_precision": "w4a8_mxfp4_mxfp8",
+        "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "primary": true,
+        "total_gpu_grid": [
+          16,
+          24,
+          36,
+          48,
+          72
+        ]
+      },
+      "winners": [
+        {
+          "mtp": {
+            "afd_config": "unit 12A:4F (16 GPU) x1; cluster 12A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 3034.472500092968,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 224/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 3138.2458819773706,
+            "ratio": 0.9669326796602004
+          },
+          "no_mtp": {
+            "afd_config": "unit 12A:4F (16 GPU) x1; cluster 12A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 1825.9597720145675,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 224/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 2055.0771064355163,
+            "ratio": 0.8885115630438084
+          },
+          "total_gpus": 16,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:4F (24 GPU) x1; cluster 20A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 3368.3793389555544,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 224/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 3138.2458819773706,
+            "ratio": 1.0733318757143335
+          },
+          "no_mtp": {
+            "afd_config": "unit 20A:4F (24 GPU) x1; cluster 20A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 2028.7012247474431,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 224/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 2055.0771064355163,
+            "ratio": 0.9871655026444134
+          },
+          "total_gpus": 24,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 32A:4F (36 GPU) x1; cluster 32A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 3589.737244761186,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 224/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 3138.2458819773706,
+            "ratio": 1.1438674277808136
+          },
+          "no_mtp": {
+            "afd_config": "unit 32A:4F (36 GPU) x1; cluster 32A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 2163.2483844589406,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 224/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 2055.0771064355163,
+            "ratio": 1.052636116515864
+          },
+          "total_gpus": 36,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 44A:4F (48 GPU) x1; cluster 44A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 3584.1778672225014,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 224/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 3138.2458819773706,
+            "ratio": 1.1420959357601879
+          },
+          "no_mtp": {
+            "afd_config": "unit 44A:4F (48 GPU) x1; cluster 44A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 2228.6860739473273,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 224/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 2055.0771064355163,
+            "ratio": 1.084478079663362
+          },
+          "total_gpus": 48,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 32A:4F (36 GPU) x2; cluster 64A:8F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 3589.737244761186,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 224/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 3138.2458819773706,
+            "ratio": 1.1438674277808136
+          },
+          "no_mtp": {
+            "afd_config": "unit 68A:4F (72 GPU) x1; cluster 68A:4F; A-TP4; batch 64/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 2294.541615726722,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 224/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 2055.0771064355163,
+            "ratio": 1.1165233696299364
+          },
+          "total_gpus": 72,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 12A:4F (16 GPU) x1; cluster 12A:4F; A-TP4; batch 32/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 1585.143167955243,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 112/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 1846.1505202497578,
+            "ratio": 0.8586207628080053
+          },
+          "no_mtp": {
+            "afd_config": "unit 12A:4F (16 GPU) x1; cluster 12A:4F; A-TP4; batch 32/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 947.2368192866502,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 112/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 1114.8102152978772,
+            "ratio": 0.8496843734370954
+          },
+          "total_gpus": 16,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:4F (24 GPU) x1; cluster 20A:4F; A-TP4; batch 32/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 1761.1333411030391,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 112/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 1846.150520249758,
+            "ratio": 0.9539489449997732
+          },
+          "no_mtp": {
+            "afd_config": "unit 20A:4F (24 GPU) x1; cluster 20A:4F; A-TP4; batch 32/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 1052.1080880328188,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 112/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 1114.8102152978772,
+            "ratio": 0.9437553348501526
+          },
+          "total_gpus": 24,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 32A:4F (36 GPU) x1; cluster 32A:4F; A-TP4; batch 32/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 1877.958583073345,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 112/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 1846.1505202497578,
+            "ratio": 1.0172293984020782
+          },
+          "no_mtp": {
+            "afd_config": "unit 32A:4F (36 GPU) x1; cluster 32A:4F; A-TP4; batch 32/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 1121.1392960830535,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 112/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 1114.8102152978772,
+            "ratio": 1.0056772719682023
+          },
+          "total_gpus": 36,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 44A:4F (48 GPU) x1; cluster 44A:4F; A-TP4; batch 32/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 1934.6912382799871,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 112/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 1846.150520249758,
+            "ratio": 1.0479596420005075
+          },
+          "no_mtp": {
+            "afd_config": "unit 44A:4F (48 GPU) x1; cluster 44A:4F; A-TP4; batch 32/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 1156.268571556795,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 112/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 1114.8102152978772,
+            "ratio": 1.0371887122041128
+          },
+          "total_gpus": 48,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 68A:4F (72 GPU) x1; cluster 68A:4F; A-TP4; batch 32/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 1991.8499564928966,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 112/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 1846.1505202497578,
+            "ratio": 1.0789206701430973
+          },
+          "no_mtp": {
+            "afd_config": "unit 68A:4F (72 GPU) x1; cluster 68A:4F; A-TP4; batch 32/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 1190.634421964287,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 112/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 1114.8102152978772,
+            "ratio": 1.068015349721342
+          },
+          "total_gpus": 72,
+          "workload": "16k"
+        }
+      ]
+    },
+    {
+      "arm_backend_contracts": {
+        "AGG": {
+          "attention_backend": "SGLang 0.5.14 MSA model using DSA utilization transfer",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        },
+        "AGG + AFD": {
+          "attention_backend": "SGLang 0.5.14 MSA model using DSA utilization transfer",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        },
+        "AGG + AFD + MTP": {
+          "attention_backend": "SGLang 0.5.14 MSA model using DSA utilization transfer",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        },
+        "AGG + MTP": {
+          "attention_backend": "SGLang 0.5.14 MSA model using DSA utilization transfer",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        }
+      },
+      "attention_backend": "SGLang 0.5.14 MSA model using DSA utilization transfer",
+      "attention_type": "MiniMax Sparse Attention: 16 x 128-token selected blocks (2,048-token sparse budget)",
+      "label": "MiniMax-M3",
+      "model": "minimax_m3",
+      "moe_backend": "default",
+      "moe_structure": "hidden=6144, expert_inter=3072, 128 routed experts, top-4",
+      "primary_mtp": {
+        "acceptance_basis": "conditional acceptance=70%",
+        "accepted_drafts": 0.7,
+        "name": "mtp_n1_r70",
+        "nextn": 1,
+        "primary": true,
+        "progress": 1.7,
+        "total_gpu_grid": [
+          16,
+          24,
+          36,
+          48,
+          72
+        ],
+        "verification_width": 2
+      },
+      "primary_precision": {
+        "evidence": "W4A8 quantization contract matching the exact MegaMoE profile key",
+        "exact_shape_data": false,
+        "fmha_quant_mode": null,
+        "gemm_quant_mode": null,
+        "key": "mxfp4_mxfp8_megamoe",
+        "kvcache_quant_mode": null,
+        "measured_moe_precision": "w4a8_mxfp4_mxfp8",
+        "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "primary": true,
+        "total_gpu_grid": [
+          16,
+          24,
+          36,
+          48,
+          72
+        ]
+      },
+      "winners": [
+        {
+          "mtp": {
+            "afd_config": "unit 8A:8F (16 GPU) x1; cluster 8A:8F; A-TP2; batch 128/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 4336.561839850134,
+            "agg_config": "unit 8 GPU; TP2/DP4; MoE EP8; batch 192/DP worker; \u00d72 replicas",
+            "agg_tps_gpu": 4961.67084497242,
+            "ratio": 0.8740123993199389
+          },
+          "no_mtp": {
+            "afd_config": "unit 8A:8F (16 GPU) x1; cluster 8A:8F; A-TP2; batch 128/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 3203.2501158955083,
+            "agg_config": "unit 16 GPU; TP2/DP8; MoE EP16; batch 192/DP worker; \u00d71 replicas",
+            "agg_tps_gpu": 3261.976185281288,
+            "ratio": 0.9819967816899572
+          },
+          "total_gpus": 16,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x1; cluster 16A:8F; A-TP1; batch 128/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 4658.082608183754,
+            "agg_config": "unit 8 GPU; TP2/DP4; MoE EP8; batch 192/DP worker; \u00d73 replicas",
+            "agg_tps_gpu": 4961.67084497242,
+            "ratio": 0.9388133057846255
+          },
+          "no_mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x1; cluster 16A:8F; A-TP2; batch 128/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 3450.129447891637,
+            "agg_config": "unit 4 GPU; TP2/DP2; MoE EP4; batch 160/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 3239.2769459949336,
+            "ratio": 1.065092459030835
+          },
+          "total_gpus": 24,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x1; cluster 20A:16F; A-TP2; batch 128/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 4669.86861702356,
+            "agg_config": "unit 8 GPU; TP2/DP4; MoE EP8; batch 192/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 4410.374084419929,
+            "ratio": 1.058837306685689
+          },
+          "no_mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x1; cluster 20A:16F; A-TP2; batch 128/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 3548.0030751526097,
+            "agg_config": "unit 4 GPU; TP2/DP2; MoE EP4; batch 160/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 3239.2769459949336,
+            "ratio": 1.0953071115266595
+          },
+          "total_gpus": 36,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x2; cluster 32A:16F; A-TP1; batch 128/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 4658.082608183754,
+            "agg_config": "unit 8 GPU; TP2/DP4; MoE EP8; batch 192/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 4961.67084497242,
+            "ratio": 0.9388133057846255
+          },
+          "no_mtp": {
+            "afd_config": "unit 32A:16F (48 GPU) x1; cluster 32A:16F; A-TP2; batch 128/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 3671.1444397587134,
+            "agg_config": "unit 16 GPU; TP2/DP8; MoE EP16; batch 192/DP worker; \u00d73 replicas",
+            "agg_tps_gpu": 3261.976185281288,
+            "ratio": 1.1254356964111747
+          },
+          "total_gpus": 48,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x2; cluster 40A:32F; A-TP2; batch 128/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 4669.86861702356,
+            "agg_config": "unit 8 GPU; TP2/DP4; MoE EP8; batch 192/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 4961.67084497242,
+            "ratio": 0.9411887170539459
+          },
+          "no_mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x2; cluster 40A:32F; A-TP2; batch 128/A-GPU (256/A worker); microbatch 2",
+            "afd_tps_gpu": 3548.0030751526097,
+            "agg_config": "unit 4 GPU; TP2/DP2; MoE EP4; batch 160/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 3239.2769459949336,
+            "ratio": 1.0953071115266595
+          },
+          "total_gpus": 72,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:8F (16 GPU) x1; cluster 8A:8F; A-TP2; batch 72/A-GPU (144/A worker); microbatch 2",
+            "afd_tps_gpu": 3019.5381882770866,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 160/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 3636.2020346892505,
+            "ratio": 0.8304099055747699
+          },
+          "no_mtp": {
+            "afd_config": "unit 12A:4F (16 GPU) x1; cluster 12A:4F; A-TP2; batch 72/A-GPU (144/A worker); microbatch 1",
+            "afd_tps_gpu": 2071.655004681911,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 160/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 2390.4617274546736,
+            "ratio": 0.8666338309828441
+          },
+          "total_gpus": 16,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x1; cluster 16A:8F; A-TP1; batch 72/A-GPU (72/A worker); microbatch 2",
+            "afd_tps_gpu": 3255.6654963293963,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 160/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 3636.202034689251,
+            "ratio": 0.8953478011591358
+          },
+          "no_mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x1; cluster 16A:8F; A-TP2; batch 72/A-GPU (144/A worker); microbatch 2",
+            "afd_tps_gpu": 2396.2399532213435,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 160/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 2390.4617274546736,
+            "ratio": 1.0024172007024026
+          },
+          "total_gpus": 24,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x1; cluster 20A:16F; A-TP2; batch 72/A-GPU (144/A worker); microbatch 2",
+            "afd_tps_gpu": 3412.113001154097,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 160/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 3636.2020346892505,
+            "ratio": 0.9383727770356677
+          },
+          "no_mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x1; cluster 20A:16F; A-TP4; batch 72/A-GPU (288/A worker); microbatch 2",
+            "afd_tps_gpu": 2330.6360429250763,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 160/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 2390.4617274546736,
+            "ratio": 0.9749731678016452
+          },
+          "total_gpus": 36,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 32A:16F (48 GPU) x1; cluster 32A:16F; A-TP1; batch 72/A-GPU (72/A worker); microbatch 2",
+            "afd_tps_gpu": 3388.4228884644126,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 160/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 3636.202034689251,
+            "ratio": 0.9318577065132704
+          },
+          "no_mtp": {
+            "afd_config": "unit 32A:16F (48 GPU) x1; cluster 32A:16F; A-TP2; batch 72/A-GPU (144/A worker); microbatch 2",
+            "afd_tps_gpu": 2580.821580993303,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 160/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 2390.4617274546736,
+            "ratio": 1.0796330898555409
+          },
+          "total_gpus": 48,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x2; cluster 40A:32F; A-TP2; batch 72/A-GPU (144/A worker); microbatch 2",
+            "afd_tps_gpu": 3412.113001154097,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 160/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 3636.2020346892505,
+            "ratio": 0.9383727770356677
+          },
+          "no_mtp": {
+            "afd_config": "unit 40A:32F (72 GPU) x1; cluster 40A:32F; A-TP4; batch 72/A-GPU (288/A worker); microbatch 2",
+            "afd_tps_gpu": 2557.403255843912,
+            "agg_config": "unit 4 GPU; TP4/DP1; MoE EP4; batch 160/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 2390.4617274546736,
+            "ratio": 1.069836520063007
+          },
+          "total_gpus": 72,
+          "workload": "16k"
+        }
+      ]
+    },
+    {
+      "arm_backend_contracts": {
+        "AGG": {
+          "attention_backend": "SGLang 0.5.14 model-specific CSA/HCA modules",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        },
+        "AGG + AFD": {
+          "attention_backend": "SGLang 0.5.14 model-specific CSA/HCA modules",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        },
+        "AGG + AFD + MTP": {
+          "attention_backend": "SGLang 0.5.14 model-specific CSA/HCA modules",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        },
+        "AGG + MTP": {
+          "attention_backend": "SGLang 0.5.14 model-specific CSA/HCA modules",
+          "framework": "SGLang 0.5.14",
+          "moe_backend": "default",
+          "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+          "moe_precision": "w4a8_mxfp4_mxfp8_trtllm"
+        }
+      },
+      "attention_backend": "SGLang 0.5.14 model-specific CSA/HCA modules",
+      "attention_type": "21 CSA + 20 HCA + 2 SWA layers, 128-token local window, mHC",
+      "label": "DeepSeek-V4-Flash",
+      "model": "deepseek_v4_flash",
+      "moe_backend": "default",
+      "moe_structure": "hidden=4096, expert_inter=2048, 256 routed experts, top-6",
+      "primary_mtp": {
+        "acceptance_basis": "sensitivity only: conditional acceptance=70%",
+        "accepted_drafts": 1.19,
+        "name": "mtp_n2_r70",
+        "nextn": 2,
+        "primary": true,
+        "progress": 2.19,
+        "total_gpu_grid": [
+          16,
+          24,
+          36,
+          48,
+          72
+        ],
+        "verification_width": 3
+      },
+      "primary_precision": {
+        "evidence": "same-shape GB200 silicon",
+        "exact_shape_data": true,
+        "fmha_quant_mode": null,
+        "gemm_quant_mode": null,
+        "key": "mxfp4_mxfp8",
+        "kvcache_quant_mode": null,
+        "measured_moe_precision": "w4a8_mxfp4_mxfp8",
+        "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "primary": true,
+        "total_gpu_grid": [
+          16,
+          24,
+          36,
+          48,
+          72
+        ]
+      },
+      "winners": [
+        {
+          "mtp": {
+            "afd_config": "unit 8A:8F (16 GPU) x1; cluster 8A:8F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 10490.494486303078,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 256/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 15938.521495876003,
+            "ratio": 0.6581849194115923
+          },
+          "no_mtp": {
+            "afd_config": "unit 12A:4F (16 GPU) x1; cluster 12A:4F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 6829.5863055060145,
+            "agg_config": "unit 8 GPU; TP1/DP8; MoE EP8; batch 256/DP worker; \u00d72 replicas",
+            "agg_tps_gpu": 11827.567927872744,
+            "ratio": 0.5774294721581325
+          },
+          "total_gpus": 16,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:4F (12 GPU) x2; cluster 16A:8F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 10018.226653800792,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 256/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 15938.521495876003,
+            "ratio": 0.6285543270994708
+          },
+          "no_mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x1; cluster 16A:8F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 7718.576442195034,
+            "agg_config": "unit 8 GPU; TP1/DP8; MoE EP8; batch 256/DP worker; \u00d73 replicas",
+            "agg_tps_gpu": 11827.567927872742,
+            "ratio": 0.652592019700475
+          },
+          "total_gpus": 24,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:4F (12 GPU) x3; cluster 24A:12F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 10018.226653800792,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 256/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 15938.521495876003,
+            "ratio": 0.6285543270994708
+          },
+          "no_mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x1; cluster 20A:16F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 7125.38608159692,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 256/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 11807.10585590697,
+            "ratio": 0.6034828660430926
+          },
+          "total_gpus": 36,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:8F (16 GPU) x3; cluster 24A:24F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 10490.494486303078,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 256/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 15938.521495876003,
+            "ratio": 0.6581849194115923
+          },
+          "no_mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x2; cluster 32A:16F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 7718.576442195034,
+            "agg_config": "unit 8 GPU; TP1/DP8; MoE EP8; batch 256/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 11827.567927872742,
+            "ratio": 0.652592019700475
+          },
+          "total_gpus": 48,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:4F (12 GPU) x6; cluster 48A:24F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 10018.226653800792,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 256/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 15938.521495876003,
+            "ratio": 0.6285543270994708
+          },
+          "no_mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x3; cluster 48A:24F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 7718.576442195034,
+            "agg_config": "unit 8 GPU; TP1/DP8; MoE EP8; batch 256/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 11827.567927872744,
+            "ratio": 0.6525920197004749
+          },
+          "total_gpus": 72,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:8F (16 GPU) x1; cluster 8A:8F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 2",
+            "afd_tps_gpu": 6472.109346139638,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 160/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 13602.010351854322,
+            "ratio": 0.47582005738271727
+          },
+          "no_mtp": {
+            "afd_config": "unit 12A:4F (16 GPU) x1; cluster 12A:4F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 1",
+            "afd_tps_gpu": 4032.019162233083,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 160/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 8927.730369137536,
+            "ratio": 0.4516286889858879
+          },
+          "total_gpus": 16,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x1; cluster 16A:8F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 2",
+            "afd_tps_gpu": 7040.739438388507,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 160/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 13602.010351854324,
+            "ratio": 0.517624913984032
+          },
+          "no_mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x1; cluster 16A:8F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 2",
+            "afd_tps_gpu": 4161.9138736556115,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 160/DP worker; \u00d76 replicas",
+            "agg_tps_gpu": 8927.730369137536,
+            "ratio": 0.4661782672159344
+          },
+          "total_gpus": 24,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x1; cluster 20A:16F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 2",
+            "afd_tps_gpu": 6868.164177349171,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 160/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 13602.010351854322,
+            "ratio": 0.5049374320181175
+          },
+          "no_mtp": {
+            "afd_config": "unit 28A:8F (36 GPU) x1; cluster 28A:8F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 2",
+            "afd_tps_gpu": 4583.56921011618,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 160/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 8927.730369137536,
+            "ratio": 0.5134081138876259
+          },
+          "total_gpus": 36,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x2; cluster 32A:16F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 2",
+            "afd_tps_gpu": 7040.739438388507,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 160/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 13602.010351854324,
+            "ratio": 0.517624913984032
+          },
+          "no_mtp": {
+            "afd_config": "unit 32A:16F (48 GPU) x1; cluster 32A:16F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 2",
+            "afd_tps_gpu": 4592.798351000964,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 160/DP worker; \u00d712 replicas",
+            "agg_tps_gpu": 8927.730369137536,
+            "ratio": 0.514441875045634
+          },
+          "total_gpus": 48,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x3; cluster 48A:24F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 2",
+            "afd_tps_gpu": 7040.739438388507,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 160/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 13602.010351854322,
+            "ratio": 0.517624913984032
+          },
+          "no_mtp": {
+            "afd_config": "unit 56A:16F (72 GPU) x1; cluster 56A:16F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 2",
+            "afd_tps_gpu": 4635.701498066886,
+            "agg_config": "unit 4 GPU; TP1/DP4; MoE EP4; batch 160/DP worker; \u00d718 replicas",
+            "agg_tps_gpu": 8927.730369137536,
+            "ratio": 0.5192474801985668
+          },
+          "total_gpus": 72,
+          "workload": "16k"
+        }
+      ]
+    },
+    {
+      "arm_backend_contracts": {
+        "AGG": {
+          "attention_backend": "SGLang 0.5.12 with declared 0.5.14 CSA/HCA donors",
+          "framework": "SGLang 0.5.12",
+          "moe_backend": "megamoe",
+          "moe_kernel": "dsv4_megamoe_module_perf",
+          "moe_precision": "w4a8_mxfp4_mxfp8"
+        },
+        "AGG + AFD": {
+          "attention_backend": "SGLang 0.5.12 with declared 0.5.14 CSA/HCA donors",
+          "framework": "SGLang 0.5.12",
+          "moe_backend": "megamoe",
+          "moe_kernel": "dsv4_megamoe_module_perf",
+          "moe_precision": "w4a8_mxfp4_mxfp8"
+        },
+        "AGG + AFD + MTP": {
+          "attention_backend": "SGLang 0.5.12 with declared 0.5.14 CSA/HCA donors",
+          "framework": "SGLang 0.5.12",
+          "moe_backend": "megamoe",
+          "moe_kernel": "dsv4_megamoe_module_perf",
+          "moe_precision": "w4a8_mxfp4_mxfp8"
+        },
+        "AGG + MTP": {
+          "attention_backend": "SGLang 0.5.12 with declared 0.5.14 CSA/HCA donors",
+          "framework": "SGLang 0.5.12",
+          "moe_backend": "megamoe",
+          "moe_kernel": "dsv4_megamoe_module_perf",
+          "moe_precision": "w4a8_mxfp4_mxfp8"
+        }
+      },
+      "attention_backend": "SGLang 0.5.12 with declared 0.5.14 CSA/HCA donors",
+      "attention_type": "30 CSA + 31 HCA layers, 128-token local window, mHC",
+      "label": "DeepSeek-V4-Pro",
+      "model": "deepseek_v4_pro",
+      "moe_backend": "MegaMoE",
+      "moe_structure": "hidden=7168, expert_inter=3072, 384 routed experts, top-6",
+      "primary_mtp": {
+        "acceptance_basis": "sensitivity only: conditional acceptance=70%",
+        "accepted_drafts": 1.19,
+        "name": "mtp_n2_r70",
+        "nextn": 2,
+        "primary": true,
+        "progress": 2.19,
+        "total_gpu_grid": [
+          16,
+          24,
+          36,
+          48,
+          72
+        ],
+        "verification_width": 3
+      },
+      "primary_precision": {
+        "evidence": "same-shape measured MegaMoE module; utilization-hold above measured token range",
+        "exact_shape_data": true,
+        "fmha_quant_mode": null,
+        "gemm_quant_mode": null,
+        "key": "megamoe_fp4",
+        "kvcache_quant_mode": null,
+        "measured_moe_precision": "w4a8_mxfp4_mxfp8",
+        "moe_kernel": "dsv4_megamoe_module_perf",
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8",
+        "primary": true,
+        "total_gpu_grid": [
+          16,
+          24,
+          36,
+          48,
+          72
+        ]
+      },
+      "winners": [
+        {
+          "mtp": {
+            "afd_config": "unit 8A:8F (16 GPU) x1; cluster 8A:8F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 3349.5841697734445,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 192/DP worker; \u00d71 replicas",
+            "agg_tps_gpu": 7406.811279682846,
+            "ratio": 0.4522302571636294
+          },
+          "no_mtp": {
+            "afd_config": "unit 8A:8F (16 GPU) x1; cluster 8A:8F; A-TP2; batch 48/A-GPU (96/A worker); microbatch 1",
+            "afd_tps_gpu": 721.2222577013246,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 192/DP worker; \u00d71 replicas",
+            "agg_tps_gpu": 6107.743050207337,
+            "ratio": 0.1180832677099672
+          },
+          "total_gpus": 16,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:16F (24 GPU) x1; cluster 8A:16F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 3244.219151447816,
+            "agg_config": "unit 8 GPU; TP1/DP8; MoE EP8; batch 192/DP worker; \u00d73 replicas",
+            "agg_tps_gpu": 6674.5863469499645,
+            "ratio": 0.48605546213815964
+          },
+          "no_mtp": {
+            "afd_config": "unit 8A:16F (24 GPU) x1; cluster 8A:16F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 2033.9486370486181,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 192/DP worker; \u00d71 replicas",
+            "agg_tps_gpu": 4071.8287001382246,
+            "ratio": 0.49951724073745357
+          },
+          "total_gpus": 24,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x1; cluster 20A:16F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 3752.3090514818086,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 192/DP worker; \u00d72 replicas",
+            "agg_tps_gpu": 6583.832248606975,
+            "ratio": 0.5699278034120223
+          },
+          "no_mtp": {
+            "afd_config": "unit 16A:16F (32 GPU) x1; cluster 16A:16F + 4 idle; A-TP1; batch 128/A-GPU (128/A worker); microbatch 2",
+            "afd_tps_gpu": 1751.540015771161,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 192/DP worker; \u00d72 replicas",
+            "agg_tps_gpu": 5429.104933517632,
+            "ratio": 0.3226204019299183
+          },
+          "total_gpus": 36,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 28A:16F (44 GPU) x1; cluster 28A:16F + 4 idle; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 3367.195650980177,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 192/DP worker; \u00d73 replicas",
+            "agg_tps_gpu": 7406.811279682846,
+            "ratio": 0.4546079984806036
+          },
+          "no_mtp": {
+            "afd_config": "unit 16A:32F (48 GPU) x1; cluster 16A:32F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 2185.63607103922,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 192/DP worker; \u00d73 replicas",
+            "agg_tps_gpu": 6107.743050207337,
+            "ratio": 0.35784676157341383
+          },
+          "total_gpus": 48,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x2; cluster 40A:32F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 3752.3090514818086,
+            "agg_config": "unit 8 GPU; TP1/DP8; MoE EP8; batch 192/DP worker; \u00d79 replicas",
+            "agg_tps_gpu": 6674.586346949965,
+            "ratio": 0.5621785166052234
+          },
+          "no_mtp": {
+            "afd_config": "unit 8A:16F (24 GPU) x3; cluster 24A:48F; A-TP1; batch 192/A-GPU (192/A worker); microbatch 2",
+            "afd_tps_gpu": 2033.9486370486181,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 192/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 5429.104933517632,
+            "ratio": 0.3746379305530902
+          },
+          "total_gpus": 72,
+          "workload": "8k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 8A:8F (16 GPU) x1; cluster 8A:8F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 1",
+            "afd_tps_gpu": 2245.961883599692,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 160/DP worker; \u00d71 replicas",
+            "agg_tps_gpu": 7091.124926567335,
+            "ratio": 0.31672857365480306
+          },
+          "no_mtp": {
+            "afd_config": "unit 8A:8F (16 GPU) x1; cluster 8A:8F; A-TP2; batch 48/A-GPU (96/A worker); microbatch 1",
+            "afd_tps_gpu": 720.6754977154089,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 160/DP worker; \u00d71 replicas",
+            "agg_tps_gpu": 5228.989392078157,
+            "ratio": 0.1378230942306408
+          },
+          "total_gpus": 16,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 16A:8F (24 GPU) x1; cluster 16A:8F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 1",
+            "afd_tps_gpu": 2330.2133036293203,
+            "agg_config": "unit 8 GPU; TP1/DP8; MoE EP8; batch 128/DP worker; \u00d73 replicas",
+            "agg_tps_gpu": 5917.110954036677,
+            "ratio": 0.3938092967548022
+          },
+          "no_mtp": {
+            "afd_config": "unit 8A:16F (24 GPU) x1; cluster 8A:16F; A-TP2; batch 96/A-GPU (192/A worker); microbatch 1",
+            "afd_tps_gpu": 1102.3420949792478,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 160/DP worker; \u00d71 replicas",
+            "agg_tps_gpu": 3485.9929280521046,
+            "ratio": 0.3162204048403541
+          },
+          "total_gpus": 24,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x1; cluster 20A:16F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 1",
+            "afd_tps_gpu": 2494.873547505126,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 160/DP worker; \u00d72 replicas",
+            "agg_tps_gpu": 6303.222156948742,
+            "ratio": 0.3958092361943407
+          },
+          "no_mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x1; cluster 20A:16F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 2",
+            "afd_tps_gpu": 1657.9929133017642,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 160/DP worker; \u00d72 replicas",
+            "agg_tps_gpu": 4647.9905707361395,
+            "ratio": 0.35671176351787964
+          },
+          "total_gpus": 36,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 32A:16F (48 GPU) x1; cluster 32A:16F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 1",
+            "afd_tps_gpu": 2494.8380206479173,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 160/DP worker; \u00d73 replicas",
+            "agg_tps_gpu": 7091.124926567335,
+            "ratio": 0.35182542212743334
+          },
+          "no_mtp": {
+            "afd_config": "unit 32A:16F (48 GPU) x1; cluster 32A:16F; A-TP1; batch 72/A-GPU (72/A worker); microbatch 2",
+            "afd_tps_gpu": 1444.7820562736913,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 160/DP worker; \u00d73 replicas",
+            "agg_tps_gpu": 5228.989392078157,
+            "ratio": 0.27630234983121504
+          },
+          "total_gpus": 48,
+          "workload": "16k"
+        },
+        {
+          "mtp": {
+            "afd_config": "unit 20A:16F (36 GPU) x2; cluster 40A:32F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 1",
+            "afd_tps_gpu": 2494.873547505126,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 160/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 6303.222156948742,
+            "ratio": 0.3958092361943407
+          },
+          "no_mtp": {
+            "afd_config": "unit 40A:32F (72 GPU) x1; cluster 40A:32F; A-TP1; batch 96/A-GPU (96/A worker); microbatch 2",
+            "afd_tps_gpu": 1718.9271161550214,
+            "agg_config": "unit 16 GPU; TP1/DP16; MoE EP16; batch 160/DP worker; \u00d74 replicas",
+            "agg_tps_gpu": 4647.9905707361395,
+            "ratio": 0.36982155836920755
+          },
+          "total_gpus": 72,
+          "workload": "16k"
+        }
+      ]
+    }
+  ],
+  "moe_reference": {
+    "entries": 160,
+    "models": {
+      "MiniMaxAI/MiniMax-M2.5": {
+        "afd_entries": 24,
+        "afd_latency_ms": [
+          7.810976028442383,
+          30.749472618103027
+        ],
+        "afd_topologies": [
+          "4A4F"
+        ],
+        "agg_entries": 8,
+        "agg_latency_ms": [
+          5.708703994750977,
+          8.34825611114502
+        ],
+        "agg_topologies": [
+          "ep8"
+        ],
+        "entries": 32,
+        "logical_batches": [
+          48,
+          96
+        ],
+        "matched_speedup": [
+          2.5205590589940505,
+          3.4754816647483047
+        ],
+        "matched_speedup_lower_bound": [
+          2.478534316135801,
+          3.4498125881869965
+        ],
+        "microbatches": [
+          1,
+          2,
+          4
+        ],
+        "mtp_nextn": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "precisions": [
+          "w4a8_mxfp4_mxfp8"
+        ]
+      },
+      "MiniMaxAI/MiniMax-M3": {
+        "afd_entries": 24,
+        "afd_latency_ms": [
+          12.569696426391602,
+          49.6180477142334
+        ],
+        "afd_topologies": [
+          "4A4F"
+        ],
+        "agg_entries": 8,
+        "agg_latency_ms": [
+          8.064160346984863,
+          12.30289602279663
+        ],
+        "agg_topologies": [
+          "ep8"
+        ],
+        "entries": 32,
+        "logical_batches": [
+          48,
+          96
+        ],
+        "matched_speedup": [
+          2.210501335159203,
+          2.7276838556815757
+        ],
+        "matched_speedup_lower_bound": [
+          2.1895639650855876,
+          2.7080442835885763
+        ],
+        "microbatches": [
+          1,
+          2,
+          4
+        ],
+        "mtp_nextn": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "precisions": [
+          "w4a8_mxfp4_mxfp8"
+        ]
+      },
+      "Qwen/Qwen3-235B-A22B-FP8": {
+        "afd_entries": 24,
+        "afd_latency_ms": [
+          9.562880039215088,
+          35.9505615234375
+        ],
+        "afd_topologies": [
+          "4A4F"
+        ],
+        "agg_entries": 8,
+        "agg_latency_ms": [
+          7.5415520668029785,
+          13.584624290466309
+        ],
+        "agg_topologies": [
+          "ep8"
+        ],
+        "entries": 32,
+        "logical_batches": [
+          48,
+          96
+        ],
+        "matched_speedup": [
+          2.406961109440682,
+          3.7204499733525647
+        ],
+        "matched_speedup_lower_bound": [
+          2.3870382803302945,
+          3.689954028110067
+        ],
+        "microbatches": [
+          1,
+          2,
+          4
+        ],
+        "mtp_nextn": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "precisions": [
+          "w4a8_mxfp4_mxfp8"
+        ]
+      },
+      "deepseek-ai/DeepSeek-V4-Flash": {
+        "afd_entries": 24,
+        "afd_latency_ms": [
+          8.479008197784424,
+          34.98374366760254
+        ],
+        "afd_topologies": [
+          "4A4F"
+        ],
+        "agg_entries": 8,
+        "agg_latency_ms": [
+          5.723872184753418,
+          7.3525121212005615
+        ],
+        "agg_topologies": [
+          "ep8"
+        ],
+        "entries": 32,
+        "logical_batches": [
+          48,
+          96
+        ],
+        "matched_speedup": [
+          2.6262567540605106,
+          2.9594259498843285
+        ],
+        "matched_speedup_lower_bound": [
+          2.5978320895503146,
+          2.8942824399537765
+        ],
+        "microbatches": [
+          1,
+          2,
+          4
+        ],
+        "mtp_nextn": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "precisions": [
+          "w4a8_mxfp4_mxfp8"
+        ]
+      },
+      "deepseek-ai/DeepSeek-V4-Pro": {
+        "afd_entries": 24,
+        "afd_latency_ms": [
+          25.8363037109375,
+          103.16150283813477
+        ],
+        "afd_topologies": [
+          "2A6F"
+        ],
+        "agg_entries": 8,
+        "agg_latency_ms": [
+          21.585519790649414,
+          25.701279640197754
+        ],
+        "agg_topologies": [
+          "ep8"
+        ],
+        "entries": 32,
+        "logical_batches": [
+          48,
+          96
+        ],
+        "matched_speedup": [
+          1.8238536796618596,
+          1.9205630735769963
+        ],
+        "matched_speedup_lower_bound": [
+          1.7420867977307237,
+          1.8972971857706005
+        ],
+        "microbatches": [
+          1,
+          2,
+          4
+        ],
+        "mtp_nextn": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "precisions": [
+          "w4a8_mxfp4_mxfp8"
+        ]
+      }
+    },
+    "path": null,
+    "profile_filename": "afd_moe_stage_profile.json",
+    "schema": "aic.afd-moe-stage-profile.v1",
+    "systems": [
+      "b200_sxm"
+    ],
+    "url": "https://github.com/liz-badada/FastAFD/tree/megamoe-multimodel-b200/scripts/experiments/afd/reference/b200_sxm"
+  },
+  "schema": "aic.afd-fixed-pool-report.v3",
+  "sources": [
+    "afd_multimodel_generic_20260804.json"
+  ],
+  "speed_floor_tokps_per_user": 30.0
+}

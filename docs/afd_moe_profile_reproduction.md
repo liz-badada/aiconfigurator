@@ -126,6 +126,8 @@ covered by the measured MoE boundary.
 ```bash
 uv run python tools/render_afd_multimodel_mtp_report.py \
   --sweep /path/to/measured_only_sweep.json \
+  --moe-reference-profile /path/to/afd_moe_stage_profile.json \
+  --moe-reference-url https://github.com/liz-badada/FastAFD/tree/megamoe-multimodel-b200/scripts/experiments/afd/reference/b200_sxm \
   --output-dir /path/to/measured_report \
   --speed-floor 30
 ```
@@ -134,6 +136,11 @@ Open `/path/to/measured_report/index.html`. Every chart is inline SVG, so the
 report directory has no external image dependency. Model pages list the exact
 measured MoE-stage key, latency, residual AIC work, validation speedup bound,
 and source commit used by each selected point.
+
+`--moe-reference-profile` is also valid when rendering a generic GB200 sweep
+from the qualified B200 profile. In that case the report places the B200
+latency and speedup ranges in a separate evidence table and explicitly records
+that zero B200 points were injected into the GB200 system simulation.
 
 ## 5. Optional Dynamo Mocker replay
 
@@ -169,6 +176,17 @@ uv run python tools/afd_multimodel_mtp_mocker_replay.py \
 Compare `mean_tpot_ms` with `expected_steady_state_tpot_ms` first. The JSON
 field `finite_wave_efficiency_vs_aic_steady_state` separately shows how much
 fill/drain remains in the finite replay.
+
+Pass one or more generated summaries back to the renderer to include the
+accounting audit in the index without embedding NPZ files or per-case logs:
+
+```bash
+uv run python tools/render_afd_multimodel_mtp_report.py \
+  --sweep /path/to/sweep.json \
+  --mocker-summary /path/to/mocker_replay/mocker_summary.json \
+                   /path/to/mocker_steady_state/mocker_summary.json \
+  --output-dir /path/to/report --speed-floor 30
+```
 
 ## 6. Tests
 
