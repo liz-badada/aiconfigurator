@@ -94,3 +94,16 @@ def test_renderer_labels_exact_megamoe_backend(renderer_module):
 
     assert renderer_module.is_megamoe_backend(contract["moe_backend"])
     assert "MegaMoE (exact measured profile)" in renderer_module.compact_backend_contract(contract)
+
+
+def test_renderer_requires_exact_measured_moe_on_every_arm(renderer_module):
+    measured = {
+        "moe_backend": "measured-megamoe",
+        "moe_time_source": "exact-measured-profile",
+    }
+    contracts = {arm: dict(measured) for arm in ("AGG", "AGG + AFD", "AGG + MTP", "AGG + AFD + MTP")}
+
+    assert renderer_module.all_arms_use_exact_measured_moe(contracts)
+
+    contracts["AGG + MTP"]["moe_time_source"] = "aic-database"
+    assert not renderer_module.all_arms_use_exact_measured_moe(contracts)

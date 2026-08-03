@@ -225,6 +225,14 @@ def backend_display_name(value: str) -> str:
     return value or "default"
 
 
+def all_arms_use_exact_measured_moe(arm_contracts: dict[str, dict[str, str]]) -> bool:
+    return bool(arm_contracts) and all(
+        contract.get("moe_backend") == "measured-megamoe"
+        and contract.get("moe_time_source") == "exact-measured-profile"
+        for contract in arm_contracts.values()
+    )
+
+
 def primary_arm_backend_contracts(payload: dict[str, Any], model: dict[str, Any]) -> dict[str, dict[str, str]]:
     """Return and validate the backend contract used by each primary arm."""
     precision = primary_profile(model)["key"]
@@ -693,7 +701,17 @@ def model_navigation(payload: dict[str, Any], current: str | None = None) -> str
 def contract_section(model: dict[str, Any], contract: dict[str, Any], arm_contracts: dict[str, dict[str, str]]) -> str:
     profile = primary_profile(model)
     mtp = primary_mtp(model)
-    exact = "same-shape data" if profile["exact_shape_data"] else "projected / transferred utilization"
+    measured_moe = all_arms_use_exact_measured_moe(arm_contracts)
+    exact = (
+        "exact measured stage profile"
+        if measured_moe
+        else "same-shape data"
+        if profile["exact_shape_data"]
+        else "projected / transferred utilization"
+    )
+    moe_evidence = (
+        "Exact point keys and source provenance are listed in section 4." if measured_moe else profile["evidence"]
+    )
     section = (
         "<h2>1. Compared contract</h2>"
         '<div class="callout"><strong>Matched-backend rule.</strong> AGG and AFD use the same framework, '
@@ -712,7 +730,7 @@ def contract_section(model: dict[str, Any], contract: dict[str, Any], arm_contra
                         f"{backend_display_name(arm_contracts['AGG']['moe_backend'])} / "
                         f"{arm_contracts['AGG']['moe_kernel']}"
                     ),
-                    esc(profile["evidence"]),
+                    esc(moe_evidence),
                 ],
                 ["MoE precision", esc(profile["moe_quant_mode"]), exact],
                 [
@@ -923,6 +941,7 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
     body += "<h2>4. Module work versus overlapped service</h2>"
     module_categories = []
     module_values = []
+    module_records = []
     for workload in CONTEXTS:
         for scenario, suffix in (("no_mtp", "no MTP"), (mtp["name"], "MTP")):
             pair = winners[(workload, 72, scenario)]
@@ -931,6 +950,7 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
                 if row is not None:
                     module_categories.append(f"{workload.upper()} {prefix} {suffix}")
                     module_values.append(module_totals(row))
+                    module_records.append((module_categories[-1], row))
     module_max = nice_max(max(sum(values.values()) for values in module_values) * 1.05)
     body += figure(
         stacked_bar_svg(module_categories, module_values, y_max=module_max),
@@ -950,6 +970,53 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
         composition_rows,
         css="wide",
     )
+
+    measured_rows = []
+    for category, row in module_records:
+        measurement = row.get("moe_measurement", {})
+        if not measurement.get("used"):
+            continue
+        key = measurement["key"]
+        measured_rows.append(
+            [
+                esc(category),
+                esc(key["stage"]),
+                esc(key["topology"]),
+                key["logical_batch_per_source_rank"],
+                key["mtp_nextn"],
+                key["microbatches"],
+                fmt(measurement["measured_latency_ms"], 3),
+                fmt(measurement.get("generic_residual_ms", 0.0), 3),
+                fmt(measurement.get("matched_speedup"), 3),
+                fmt(measurement.get("matched_speedup_lower_bound"), 3),
+                f'<span class="mono">{esc(str(measurement.get("source_commit", ""))[:12])}</span>',
+            ]
+        )
+    if measured_rows:
+        body += "<h3>Exact measured MoE-stage inputs for the selected 72-GPU points</h3>"
+        body += table(
+            [
+                "Case",
+                "Stage",
+                "Topology",
+                "Logical batch / source rank",
+                "MTP nextN",
+                "Microbatches",
+                "Measured stage ms",
+                "AIC residual ms",
+                "Matched speedup",
+                "Conservative lower bound",
+                "Source commit",
+            ],
+            measured_rows,
+            css="wide",
+        )
+        body += (
+            '<p class="small muted">Measured stage ms is the complete MegaMoE boundary selected by the exact '
+            "model/system/topology/batch/MTP/microbatch key. AIC residual contains only decoder work outside that "
+            "measured boundary, such as non-MoE layers. The speedup columns compare the colocated complete MoE-stage "
+            "paths and are evidence for the kernel measurement; they are not the end-to-end AFD/AGG ratio.</p>"
+        )
 
     body += "<h2>5. Throughput–latency Pareto front</h2>"
     pareto_by_context = {}
@@ -1042,6 +1109,8 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
     )
 
     model_rows = [row for row in payload["rows"] if row["model"] == model["key"]]
+    primary_rows = [row for row in model_rows if row["precision_profile"] == profile["key"]]
+    measured_primary_rows = [row for row in primary_rows if row.get("moe_measurement", {}).get("used")]
     model_failures = [row for row in payload["failures"] if row.get("model") == model["key"]]
     failure_counts = Counter(failure["error"].split(":", 1)[0] for failure in model_failures)
     body += "<h2>7. Sweep coverage and confidence</h2>"
@@ -1054,9 +1123,12 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
             ["Top rejection classes", esc(", ".join(f"{key}={value}" for key, value in failure_counts.most_common(4)))],
             ["Primary attention evidence", esc(model["attention_evidence"])],
             ["Primary MoE evidence", esc(profile["evidence"])],
+            ["Primary rows using exact measured MoE", f"{len(measured_primary_rows):,} / {len(primary_rows):,}"],
         ],
     )
-    if not profile["exact_shape_data"]:
+    if all_arms_use_exact_measured_moe(arm_contracts):
+        body += '<div class="callout ok"><strong>MoE boundary is exact measured data in all four arms.</strong> Attention, dense GEMM, router work outside the measured stage, communication, and uncovered MTP shapes may still come from AIC HYBRID estimates. End-to-end throughput is therefore a measured-MoE hybrid simulation, not an end-to-end silicon measurement.</div>'
+    elif not profile["exact_shape_data"]:
         body += '<div class="callout warn"><strong>Projection warning.</strong> This primary profile lacks a native target-shape silicon row. Treat absolute throughput and the A:F optimum as a calibrated hypothesis until measured on the target kernel.</div>'
     else:
         body += '<div class="callout ok"><strong>Primary MoE shape is covered.</strong> HYBRID may still estimate uncovered attention, GEMM, communication, or q-wide MTP shapes; the per-operation source mix remains part of the evidence boundary.</div>'
