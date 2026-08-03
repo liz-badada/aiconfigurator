@@ -10,6 +10,22 @@ topology, logical batch per source rank, MTP `nextn`, microbatch count, MoE
 layer count, and precision. A B200 point therefore cannot calibrate a GB200
 simulation.
 
+## Where the measured values live
+
+`afd_moe_time_ms` is a single-run SDK/CLI override; it is not the calibration
+database. The reproducible path is:
+
+1. FastAFD writes one raw JSON result per exact workload through
+   `scripts/experiments/afd/run_megamoe_{colocated,m2n}_model_benchmark.sh`.
+2. `scripts/experiments/afd/summarize_megamoe_model_results.py` validates those
+   JSON files and exports `afd_moe_stage_profile.json`.
+3. This AIC branch loads that profile with `--afd-moe-profile` and records the
+   exact matched entry in every retained AGG or AFD row.
+
+The collection commands and qualification gates are in FastAFD
+`scripts/experiments/afd/README_megamoe_multimodel.md` on branch
+`megamoe-multimodel-b200`.
+
 For AGG, the measured source-rank batch is
 `agg_local_batch / attention_tp`, because `agg_local_batch` is per attention-DP
 replica and the MoE EP stage consumes the tokens distributed across its source
