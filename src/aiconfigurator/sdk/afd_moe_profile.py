@@ -40,6 +40,7 @@ class AFDMoEStageMeasurement:
     evidence: str
     correctness: bool | None
     matched_speedup: float | None
+    matched_speedup_lower_bound: float | None
     source_commit: str
     source_tree_sha256: str
     source_result: str
@@ -124,17 +125,31 @@ def _parse_entry(value: Any, index: int) -> AFDMoEStageMeasurement:
     evidence = _string(validation.get("evidence"), f"{prefix}.validation.evidence")
     correctness = validation.get("correctness")
     speedup = validation.get("matched_speedup")
+    speedup_lower_bound = validation.get("matched_speedup_lower_bound")
     if stage == "agg":
         if correctness is not True:
             raise ValueError(f"{prefix}.validation.correctness must be true for AGG")
         speedup = _finite_float(speedup, f"{prefix}.validation.matched_speedup", positive=True)
         if speedup <= 1:
             raise ValueError(f"{prefix}.validation.matched_speedup must be > 1 for AGG")
+        speedup_lower_bound = _finite_float(
+            speedup_lower_bound,
+            f"{prefix}.validation.matched_speedup_lower_bound",
+            positive=True,
+        )
+        if speedup_lower_bound <= 1:
+            raise ValueError(f"{prefix}.validation.matched_speedup_lower_bound must be > 1 for AGG")
     else:
         if correctness is not None and not isinstance(correctness, bool):
             raise ValueError(f"{prefix}.validation.correctness must be boolean or null")
         if speedup is not None:
             speedup = _finite_float(speedup, f"{prefix}.validation.matched_speedup", positive=True)
+        if speedup_lower_bound is not None:
+            speedup_lower_bound = _finite_float(
+                speedup_lower_bound,
+                f"{prefix}.validation.matched_speedup_lower_bound",
+                positive=True,
+            )
 
     source = _object(raw.get("source"), f"{prefix}.source")
     key = AFDMoEStageKey(
@@ -159,6 +174,7 @@ def _parse_entry(value: Any, index: int) -> AFDMoEStageMeasurement:
         evidence=evidence,
         correctness=correctness,
         matched_speedup=speedup,
+        matched_speedup_lower_bound=speedup_lower_bound,
         source_commit=_string(source.get("commit"), f"{prefix}.source.commit"),
         source_tree_sha256=_string(source.get("source_tree_sha256"), f"{prefix}.source.source_tree_sha256"),
         source_result=_string(source.get("result"), f"{prefix}.source.result"),

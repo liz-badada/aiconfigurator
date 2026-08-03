@@ -25,6 +25,7 @@ def _entry(**overrides):
             "stable": True,
             "correctness": True,
             "matched_speedup": 1.4,
+            "matched_speedup_lower_bound": 1.25,
             "evidence": "same-point-colocated",
         },
         "source": {
@@ -86,6 +87,7 @@ def test_profile_accepts_stable_afd_entry_without_colocated_fields(tmp_path):
             "stable": True,
             "correctness": None,
             "matched_speedup": None,
+            "matched_speedup_lower_bound": None,
             "evidence": "same-model-system-precision-colocated-plus-stable-split",
         },
     )
@@ -104,6 +106,7 @@ def test_profile_accepts_stable_afd_entry_without_colocated_fields(tmp_path):
                     "stable": False,
                     "correctness": True,
                     "matched_speedup": 1.4,
+                    "matched_speedup_lower_bound": 1.25,
                     "evidence": "same-point-colocated",
                 }
             ),
@@ -115,6 +118,7 @@ def test_profile_accepts_stable_afd_entry_without_colocated_fields(tmp_path):
                     "stable": True,
                     "correctness": False,
                     "matched_speedup": 1.4,
+                    "matched_speedup_lower_bound": 1.25,
                     "evidence": "same-point-colocated",
                 }
             ),
@@ -126,10 +130,23 @@ def test_profile_accepts_stable_afd_entry_without_colocated_fields(tmp_path):
                     "stable": True,
                     "correctness": True,
                     "matched_speedup": 0.9,
+                    "matched_speedup_lower_bound": 1.25,
                     "evidence": "same-point-colocated",
                 }
             ),
             "matched_speedup",
+        ),
+        (
+            _entry(
+                validation={
+                    "stable": True,
+                    "correctness": True,
+                    "matched_speedup": 1.4,
+                    "matched_speedup_lower_bound": 0.95,
+                    "evidence": "same-point-colocated",
+                }
+            ),
+            "matched_speedup_lower_bound",
         ),
         (_entry(latency_ms=float("nan")), "latency_ms"),
     ],

@@ -56,9 +56,11 @@ uv run python -c \
   'from aiconfigurator.sdk.afd_moe_profile import AFDMoEStageProfile; AFDMoEStageProfile.load("/path/to/afd_moe_stage_profile.json")'
 ```
 
-AGG entries must have stable timing, a passing matched-output check, and
-same-point speedup greater than one. AFD entries must be stable and carry the
-paired validation evidence emitted by the measurement pipeline.
+AGG entries must have stable MegaMoE timing, a passing matched-output check,
+median same-point speedup greater than one, and a conservative
+`min(DeepEP samples) / max(MegaMoE samples)` speedup lower bound greater than
+one. AFD entries must be stable and carry the paired validation evidence
+emitted by the measurement pipeline.
 
 ## 3. Run the fixed-pool sweep
 

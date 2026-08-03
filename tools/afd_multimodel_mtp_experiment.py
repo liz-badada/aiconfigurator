@@ -461,6 +461,8 @@ def measurement_record(
         "source_tree_sha256": measurement.source_tree_sha256,
         "source_result": measurement.source_result,
         "evidence": measurement.evidence,
+        "matched_speedup": measurement.matched_speedup,
+        "matched_speedup_lower_bound": measurement.matched_speedup_lower_bound,
     }
 
 
