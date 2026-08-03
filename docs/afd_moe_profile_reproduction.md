@@ -22,6 +22,10 @@ database. The reproducible path is:
 3. This AIC branch loads that profile with `--afd-moe-profile` and records the
    exact matched entry in every retained AGG or AFD row.
 
+The current colocated MegaMoE path exports
+`moe_precision=w4a8_mxfp4_mxfp8` (E2M1 plus UE8M0 block-32 weights and E4M3
+activations). It must not be used to calibrate an `nvfp4` candidate.
+
 The collection commands and qualification gates are in FastAFD
 `scripts/experiments/afd/README_megamoe_multimodel.md` on branch
 `megamoe-multimodel-b200`.

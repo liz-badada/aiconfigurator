@@ -132,13 +132,13 @@ MODELS = (
         moe_structure="hidden=4096, expert_inter=1536, 128 routed experts, top-8",
         precision_profiles=(
             PrecisionProfile(
-                key="nvfp4",
-                moe_quant_mode="nvfp4",
-                moe_kernel="sglang_flashinfer_trtllm_moe",
-                evidence="same-shape GB200 silicon",
-                exact_shape_data=True,
+                key="mxfp4_mxfp8_megamoe",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="sglang_mxfp4_flashinfer_trtllm_moe",
+                evidence="W4A8 quantization contract matching the exact MegaMoE profile key",
+                exact_shape_data=False,
                 primary=True,
-                measured_moe_precision="fp4",
+                measured_moe_precision="w4a8_mxfp4_mxfp8",
             ),
             PrecisionProfile(
                 key="fp8",
@@ -177,13 +177,13 @@ MODELS = (
         moe_structure="hidden=3072, expert_inter=1536, 256 routed experts, top-8",
         precision_profiles=(
             PrecisionProfile(
-                key="nvfp4",
-                moe_quant_mode="nvfp4",
-                moe_kernel="sglang_flashinfer_trtllm_moe",
-                evidence="same-shape GB200 silicon; deployment precision sensitivity",
-                exact_shape_data=True,
+                key="mxfp4_mxfp8_megamoe",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="sglang_mxfp4_flashinfer_trtllm_moe",
+                evidence="W4A8 quantization contract matching the exact MegaMoE profile key",
+                exact_shape_data=False,
                 primary=True,
-                measured_moe_precision="fp4",
+                measured_moe_precision="w4a8_mxfp4_mxfp8",
                 gemm_quant_mode="fp8_block",
                 kvcache_quant_mode="bfloat16",
                 fmha_quant_mode="bfloat16",
@@ -228,13 +228,13 @@ MODELS = (
         moe_structure="hidden=6144, expert_inter=3072, 128 routed experts, top-4",
         precision_profiles=(
             PrecisionProfile(
-                key="nvfp4_projected",
-                moe_quant_mode="nvfp4",
-                moe_kernel="sglang_flashinfer_trtllm_moe",
-                evidence="exact target shape with cross-shape utilization transfer",
+                key="mxfp4_mxfp8_megamoe",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="sglang_mxfp4_flashinfer_trtllm_moe",
+                evidence="W4A8 quantization contract matching the exact MegaMoE profile key",
                 exact_shape_data=False,
                 primary=True,
-                measured_moe_precision="fp4",
+                measured_moe_precision="w4a8_mxfp4_mxfp8",
             ),
             PrecisionProfile(
                 key="fp8_projected",
@@ -286,7 +286,7 @@ MODELS = (
                 evidence="same-shape GB200 silicon",
                 exact_shape_data=True,
                 primary=True,
-                measured_moe_precision="fp4",
+                measured_moe_precision="w4a8_mxfp4_mxfp8",
             ),
             PrecisionProfile(
                 key="fp8",
@@ -331,7 +331,7 @@ MODELS = (
                 evidence="same-shape measured MegaMoE module; utilization-hold above measured token range",
                 exact_shape_data=True,
                 primary=True,
-                measured_moe_precision="fp4",
+                measured_moe_precision="w4a8_mxfp4_mxfp8",
             ),
         ),
         scenarios=(
