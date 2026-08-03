@@ -10,6 +10,12 @@ topology, logical batch per source rank, MTP `nextn`, microbatch count, MoE
 layer count, and precision. A B200 point therefore cannot calibrate a GB200
 simulation.
 
+For AGG, the measured source-rank batch is
+`agg_local_batch / attention_tp`, because `agg_local_batch` is per attention-DP
+replica and the MoE EP stage consumes the tokens distributed across its source
+GPU ranks. A measured point is not used when that division is non-integral.
+For AFD, `batch_per_a_gpu` is already the source-rank batch.
+
 ## 1. Environment
 
 ```bash

@@ -643,6 +643,14 @@ def configured_model(task: Task, *, tp: int, dp: int, moe_tp: int, moe_ep: int):
     return model_config, get_model(task.model_path, model_config, task.backend_name)
 
 
+def agg_source_batch_per_rank(local_batch: int, attention_tp: int) -> int | None:
+    """Map per-DP-replica AGG batch to a uniform MoE source-rank batch."""
+
+    if local_batch % attention_tp:
+        return None
+    return local_batch // attention_tp
+
+
 @cache
 def agg_point(
     model_key: str,
@@ -673,16 +681,20 @@ def agg_point(
     decode_steps = max(int(WORKLOADS[workload]["osl"]) - 1, 1)
     generation = {name: float(value) / decode_steps for name, value in summary.get_generation_latency_dict().items()}
     sources = dict(summary.get_generation_source_dict())
-    measured_key, measurement = measured_stage(
-        measured_profile_path,
-        spec=MODEL_BY_KEY[model_key],
-        precision=precision,
-        scenario=scenario,
-        stage="agg",
-        topology=f"ep{world}",
-        logical_batch_per_source_rank=local_batch,
-        microbatches=1,
-    )
+    measured_key = None
+    measurement = None
+    source_batch_per_rank = agg_source_batch_per_rank(local_batch, tp)
+    if source_batch_per_rank is not None:
+        measured_key, measurement = measured_stage(
+            measured_profile_path,
+            spec=MODEL_BY_KEY[model_key],
+            precision=precision,
+            scenario=scenario,
+            stage="agg",
+            topology=f"ep{world}",
+            logical_batch_per_source_rank=source_batch_per_rank,
+            microbatches=1,
+        )
     generic_moe_ms = 0.0
     generic_residual_ms = 0.0
     if measurement is not None:
@@ -699,6 +711,25 @@ def agg_point(
     raw_round_ms = sum(generation.values())
     result = summary.get_result_dict() or {}
     global_batch = local_batch * dp
+    moe_measurement = measurement_record(
+        measured_key,
+        measurement,
+        profile_path=measured_profile_path,
+        generic_residual_ms=generic_residual_ms,
+    ) | {"generic_expert_proxy_ms": generic_moe_ms}
+    if (
+        measured_profile_path is not None
+        and precision.measured_moe_precision is not None
+        and source_batch_per_rank is None
+    ):
+        moe_measurement = {
+            "requested": True,
+            "used": False,
+            "reason": "agg local batch is not divisible by attention TP; no exact uniform source-rank batch",
+            "profile": measured_profile_path,
+            "local_batch_per_attention_dp_replica": local_batch,
+            "attention_tp": tp,
+        }
     return {
         "system_kind": "agg",
         "model": model_key,
@@ -711,6 +742,7 @@ def agg_point(
         "moe_tp": 1,
         "moe_ep": world,
         "local_batch": local_batch,
+        "moe_source_batch_per_rank": local_batch / tp,
         "global_batch_per_replica": global_batch,
         "raw_round_ms": raw_round_ms,
         "effective_tpot_ms": raw_round_ms / scenario.progress,
@@ -720,13 +752,7 @@ def agg_point(
         "oom": bool(summary.check_oom() or summary.check_kv_cache_oom()),
         "modules": operation_rows("AGG", generation),
         "op_sources": sources,
-        "moe_measurement": measurement_record(
-            measured_key,
-            measurement,
-            profile_path=measured_profile_path,
-            generic_residual_ms=generic_residual_ms,
-        )
-        | {"generic_expert_proxy_ms": generic_moe_ms},
+        "moe_measurement": moe_measurement,
         "backend_contract": {
             "framework": f"SGLang {MODEL_BY_KEY[model_key].backend_version}",
             "moe_backend": (
