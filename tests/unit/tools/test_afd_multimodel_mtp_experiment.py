@@ -33,6 +33,13 @@ def test_afd_service_units_stop_at_largest_selected_pool(experiment_module):
     assert experiment_module.afd_service_unit_grid(()) == ()
 
 
+def test_measured_only_rejects_a_profile_for_another_system(experiment_module):
+    profile = SimpleNamespace(entries=(SimpleNamespace(key=SimpleNamespace(system="b200_sxm")),))
+
+    with pytest.raises(ValueError, match=r"b200_sxm.*gb200"):
+        experiment_module.require_profile_system(profile, "gb200")
+
+
 def test_run_sweeps_fixed_agg_pools_and_all_fitting_afd_units(experiment_module, monkeypatch, tmp_path):
     agg_sizes = []
     afd_sizes = []

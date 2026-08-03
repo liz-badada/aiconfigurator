@@ -1126,13 +1126,23 @@ def afd_service_unit_grid(fixed_pool_sizes: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(range(2 * GPUS_PER_NODE, max(fixed_pool_sizes) + 1, GPUS_PER_NODE))
 
 
+def require_profile_system(profile: AFDMoEStageProfile, system: str) -> None:
+    """Reject a measured-only run when the profile targets other hardware."""
+
+    available = sorted({entry.key.system for entry in profile.entries})
+    if system not in available:
+        raise ValueError(f"measured MoE profile has systems {available}, but this sweep requires {system!r}")
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     selected_models = [MODEL_BY_KEY[key] for key in args.models]
     selected_workloads = list(args.workloads)
     selected_totals = tuple(sorted(set(args.total_gpus)))
     measured_profile_path = str(args.afd_moe_profile.resolve()) if args.afd_moe_profile is not None else None
     if measured_profile_path is not None:
-        measured_profile(measured_profile_path)
+        profile = measured_profile(measured_profile_path)
+        if args.require_measured_moe:
+            require_profile_system(profile, SYSTEM)
     agg_rows: list[dict[str, Any]] = []
     afd_rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
