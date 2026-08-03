@@ -13,11 +13,21 @@ import pytest
 pytestmark = pytest.mark.unit
 
 EXPERIMENT = Path(__file__).resolve().parents[3] / "tools" / "afd_multimodel_mtp_experiment.py"
+RENDERER = Path(__file__).resolve().parents[3] / "tools" / "render_afd_multimodel_mtp_report.py"
 
 
 @pytest.fixture(scope="module")
 def experiment_module():
     spec = importlib.util.spec_from_file_location("afd_multimodel_mtp_experiment", EXPERIMENT)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def renderer_module():
+    spec = importlib.util.spec_from_file_location("render_afd_multimodel_mtp_report", RENDERER)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -72,3 +82,15 @@ def test_run_sweeps_fixed_agg_pools_and_all_fitting_afd_units(experiment_module,
     assert agg_sizes == [16, 24, 16, 24]
     assert afd_sizes == [8, 12, 16, 20, 24] * 2
     assert payload["contract"]["afd_service_unit_gpu_grid"] == [8, 12, 16, 20, 24]
+
+
+def test_renderer_labels_exact_megamoe_backend(renderer_module):
+    contract = {
+        "framework": "SGLang 0.5.14",
+        "moe_backend": "measured-megamoe",
+        "moe_kernel": "measured-profile",
+        "moe_precision": "W4A8_MXFP4_MXFP8_TRTLLM",
+    }
+
+    assert renderer_module.is_megamoe_backend(contract["moe_backend"])
+    assert "MegaMoE (exact measured profile)" in renderer_module.compact_backend_contract(contract)

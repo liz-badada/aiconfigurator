@@ -112,18 +112,16 @@ def table(headers: list[str], rows: Iterable[list[object]], *, css: str = "") ->
 
 
 def figure(svg: str, comment: str, contract_note: str | None = None) -> str:
-    contract = (
-        f'<p class="small muted"><strong>Backend contract:</strong> {contract_note}</p>' if contract_note else ""
-    )
+    contract = f'<p class="small muted"><strong>Backend contract:</strong> {contract_note}</p>' if contract_note else ""
     return f'<div class="figure">{svg}{contract}<p class="comment"><strong>How to read:</strong> {comment}</p></div>'
 
 
 def document(title: str, subtitle: str, body: str) -> str:
     return (
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>{esc(title)}</title><style>{CSS}</style></head><body><main>"
-        f"<h1>{esc(title)}</h1><p class=\"subtitle\">{subtitle}</p>{body}</main></body></html>"
+        f'<h1>{esc(title)}</h1><p class="subtitle">{subtitle}</p>{body}</main></body></html>'
     )
 
 
@@ -215,15 +213,19 @@ def primary_mtp(model: dict[str, Any]) -> dict[str, Any]:
     return scenarios[0]
 
 
-def moe_backend_label(model: dict[str, Any]) -> str:
-    if model.get("moe_backend") == "megamoe":
+def is_megamoe_backend(value: str) -> bool:
+    return value in {"megamoe", "measured-megamoe"}
+
+
+def backend_display_name(value: str) -> str:
+    if value == "measured-megamoe":
+        return "MegaMoE (exact measured profile)"
+    if value == "megamoe":
         return "MegaMoE"
-    return f"SGLang {model['backend_version']}"
+    return value or "default"
 
 
-def primary_arm_backend_contracts(
-    payload: dict[str, Any], model: dict[str, Any]
-) -> dict[str, dict[str, str]]:
+def primary_arm_backend_contracts(payload: dict[str, Any], model: dict[str, Any]) -> dict[str, dict[str, str]]:
     """Return and validate the backend contract used by each primary arm."""
     precision = primary_profile(model)["key"]
     mtp = primary_mtp(model)["name"]
@@ -244,9 +246,7 @@ def primary_arm_backend_contracts(
             and row["system_kind"] == system_kind
         }
         if len(contracts) != 1:
-            raise ValueError(
-                f"expected exactly one backend contract for {model['key']}/{label}; got {len(contracts)}"
-            )
+            raise ValueError(f"expected exactly one backend contract for {model['key']}/{label}; got {len(contracts)}")
         result[label] = dict(next(iter(contracts)))
 
     baseline = result["AGG"]
@@ -258,11 +258,8 @@ def primary_arm_backend_contracts(
 
 
 def compact_backend_contract(contract: dict[str, str]) -> str:
-    backend = "MegaMoE" if contract["moe_backend"] == "megamoe" else "default"
-    return (
-        f"{contract['framework']} · {backend} · {contract['moe_kernel']} · "
-        f"{contract['moe_precision']}"
-    )
+    backend = backend_display_name(contract["moe_backend"])
+    return f"{contract['framework']} · {backend} · {contract['moe_kernel']} · {contract['moe_precision']}"
 
 
 def select_best(
@@ -289,11 +286,7 @@ def select_best(
     if system_kind == "agg":
         candidates = [row for row in base if row["total_gpus"] == total_gpus]
     else:
-        candidates = [
-            materialize_afd_cluster(row, total_gpus)
-            for row in base
-            if row["total_gpus"] <= total_gpus
-        ]
+        candidates = [materialize_afd_cluster(row, total_gpus) for row in base if row["total_gpus"] <= total_gpus]
     return max(candidates, key=lambda row: row["output_tokens_s_gpu"], default=None)
 
 
@@ -360,9 +353,7 @@ def paired_winner(
             if agg["backend_contract"].get(field) != afd["backend_contract"].get(field)
         ]
         if mismatch:
-            raise ValueError(
-                f"backend mismatch for {model}/{workload}/{scenario}/{total_gpus}: {', '.join(mismatch)}"
-            )
+            raise ValueError(f"backend mismatch for {model}/{workload}/{scenario}/{total_gpus}: {', '.join(mismatch)}")
         ratio = afd["output_tokens_s_gpu"] / agg["output_tokens_s_gpu"]
     return {"agg": agg, "afd": afd, "ratio": ratio}
 
@@ -452,17 +443,17 @@ def line_svg(
     for index in range(6):
         value = y_min + (y_max - y_min) * index / 5
         y = y_pos(value)
-        parts.append(f'<line class="grid" x1="{left}" x2="{width-right}" y1="{y:.1f}" y2="{y:.1f}"/>')
-        parts.append(f'<text class="tick" x="{left-10}" y="{y+4:.1f}" text-anchor="end">{value:.2f}</text>')
+        parts.append(f'<line class="grid" x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}"/>')
+        parts.append(f'<text class="tick" x="{left - 10}" y="{y + 4:.1f}" text-anchor="end">{value:.2f}</text>')
     for value in x_ticks:
         x = x_pos(value)
-        parts.append(f'<line class="grid" x1="{x:.1f}" x2="{x:.1f}" y1="{top}" y2="{top+plot_h}"/>')
-        parts.append(f'<text class="tick" x="{x:.1f}" y="{top+plot_h+22}" text-anchor="middle">{value}</text>')
-    parts.append(f'<line class="axis" x1="{left}" x2="{width-right}" y1="{top+plot_h}" y2="{top+plot_h}"/>')
-    parts.append(f'<line class="axis" x1="{left}" x2="{left}" y1="{top}" y2="{top+plot_h}"/>')
+        parts.append(f'<line class="grid" x1="{x:.1f}" x2="{x:.1f}" y1="{top}" y2="{top + plot_h}"/>')
+        parts.append(f'<text class="tick" x="{x:.1f}" y="{top + plot_h + 22}" text-anchor="middle">{value}</text>')
+    parts.append(f'<line class="axis" x1="{left}" x2="{width - right}" y1="{top + plot_h}" y2="{top + plot_h}"/>')
+    parts.append(f'<line class="axis" x1="{left}" x2="{left}" y1="{top}" y2="{top + plot_h}"/>')
     if reference_y is not None and y_min <= reference_y <= y_max:
         y = y_pos(reference_y)
-        parts.append(f'<line class="ref" x1="{left}" x2="{width-right}" y1="{y:.1f}" y2="{y:.1f}"/>')
+        parts.append(f'<line class="ref" x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}"/>')
     for label, points in series.items():
         color = COLORS.get(label, "#666")
         ordered = sorted(points)
@@ -474,11 +465,11 @@ def line_svg(
     for label in series:
         color = COLORS.get(label, "#666")
         parts.append(f'<rect x="{legend_x}" y="8" width="13" height="4" fill="{color}"/>')
-        parts.append(f'<text class="legend" x="{legend_x+18}" y="14">{esc(label)}</text>')
+        parts.append(f'<text class="legend" x="{legend_x + 18}" y="14">{esc(label)}</text>')
         legend_x += 28 + len(label) * 7
-    parts.append(f'<text x="{left+plot_w/2:.1f}" y="{height-12}" text-anchor="middle">{esc(x_label)}</text>')
+    parts.append(f'<text x="{left + plot_w / 2:.1f}" y="{height - 12}" text-anchor="middle">{esc(x_label)}</text>')
     parts.append(
-        f'<text transform="translate(18 {top+plot_h/2:.1f}) rotate(-90)" text-anchor="middle">{esc(y_label)}</text>'
+        f'<text transform="translate(18 {top + plot_h / 2:.1f}) rotate(-90)" text-anchor="middle">{esc(y_label)}</text>'
     )
     parts.append("</svg>")
     return "".join(parts)
@@ -505,8 +496,8 @@ def grouped_bar_svg(
     for index in range(6):
         value = y_max * index / 5
         y = top + plot_h - value / y_max * plot_h
-        parts.append(f'<line class="grid" x1="{left}" x2="{width-right}" y1="{y:.1f}" y2="{y:.1f}"/>')
-        parts.append(f'<text class="tick" x="{left-10}" y="{y+4:.1f}" text-anchor="end">{value:.1f}</text>')
+        parts.append(f'<line class="grid" x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}"/>')
+        parts.append(f'<text class="tick" x="{left - 10}" y="{y + 4:.1f}" text-anchor="end">{value:.1f}</text>')
     labels = list(series)
     for group_index, category in enumerate(categories):
         center = left + (group_index + 0.5) * group_w
@@ -517,21 +508,21 @@ def grouped_bar_svg(
             x = start + series_index * bar_w
             y = top + plot_h - bar_h
             parts.append(
-                f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w-2:.1f}" height="{bar_h:.1f}" fill="{COLORS.get(label, "#666")}"/>'
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w - 2:.1f}" height="{bar_h:.1f}" fill="{COLORS.get(label, "#666")}"/>'
             )
         parts.append(
-            f'<text class="tick" x="{center:.1f}" y="{top+plot_h+22}" text-anchor="middle">{esc(category)}</text>'
+            f'<text class="tick" x="{center:.1f}" y="{top + plot_h + 22}" text-anchor="middle">{esc(category)}</text>'
         )
-    parts.append(f'<line class="axis" x1="{left}" x2="{width-right}" y1="{top+plot_h}" y2="{top+plot_h}"/>')
-    parts.append(f'<line class="axis" x1="{left}" x2="{left}" y1="{top}" y2="{top+plot_h}"/>')
+    parts.append(f'<line class="axis" x1="{left}" x2="{width - right}" y1="{top + plot_h}" y2="{top + plot_h}"/>')
+    parts.append(f'<line class="axis" x1="{left}" x2="{left}" y1="{top}" y2="{top + plot_h}"/>')
     legend_x = left
     for label in labels:
         parts.append(f'<rect x="{legend_x}" y="13" width="12" height="12" fill="{COLORS.get(label, "#666")}"/>')
-        parts.append(f'<text class="legend" x="{legend_x+17}" y="23">{esc(label)}</text>')
+        parts.append(f'<text class="legend" x="{legend_x + 17}" y="23">{esc(label)}</text>')
         legend_x += 30 + len(label) * 7
-    parts.append(f'<text x="{left+plot_w/2:.1f}" y="{height-12}" text-anchor="middle">{esc(x_label)}</text>')
+    parts.append(f'<text x="{left + plot_w / 2:.1f}" y="{height - 12}" text-anchor="middle">{esc(x_label)}</text>')
     parts.append(
-        f'<text transform="translate(18 {top+plot_h/2:.1f}) rotate(-90)" text-anchor="middle">{esc(y_label)}</text>'
+        f'<text transform="translate(18 {top + plot_h / 2:.1f}) rotate(-90)" text-anchor="middle">{esc(y_label)}</text>'
     )
     parts.append("</svg>")
     return "".join(parts)
@@ -553,8 +544,8 @@ def stacked_bar_svg(
     for index in range(6):
         value = y_max * index / 5
         y = top + plot_h - value / y_max * plot_h
-        parts.append(f'<line class="grid" x1="{left}" x2="{width-right}" y1="{y:.1f}" y2="{y:.1f}"/>')
-        parts.append(f'<text class="tick" x="{left-10}" y="{y+4:.1f}" text-anchor="end">{value:.1f}</text>')
+        parts.append(f'<line class="grid" x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}"/>')
+        parts.append(f'<text class="tick" x="{left - 10}" y="{y + 4:.1f}" text-anchor="end">{value:.1f}</text>')
     for index, (category, totals) in enumerate(zip(categories, values, strict=True)):
         x = left + (index + 0.5) * group_w - bar_w / 2
         cursor = top + plot_h
@@ -566,10 +557,10 @@ def stacked_bar_svg(
                 f'<rect x="{x:.1f}" y="{cursor:.1f}" width="{bar_w:.1f}" height="{bar_h:.1f}" fill="{COLORS[group]}"/>'
             )
         parts.append(
-            f'<text class="tick" x="{x+bar_w/2:.1f}" y="{top+plot_h+22}" text-anchor="middle">{esc(category)}</text>'
+            f'<text class="tick" x="{x + bar_w / 2:.1f}" y="{top + plot_h + 22}" text-anchor="middle">{esc(category)}</text>'
         )
-    parts.append(f'<line class="axis" x1="{left}" x2="{width-right}" y1="{top+plot_h}" y2="{top+plot_h}"/>')
-    parts.append(f'<line class="axis" x1="{left}" x2="{left}" y1="{top}" y2="{top+plot_h}"/>')
+    parts.append(f'<line class="axis" x1="{left}" x2="{width - right}" y1="{top + plot_h}" y2="{top + plot_h}"/>')
+    parts.append(f'<line class="axis" x1="{left}" x2="{left}" y1="{top}" y2="{top + plot_h}"/>')
     legend_x, legend_y = left, 14
     for group in MODULE_ORDER:
         width_guess = 34 + len(group) * 6.5
@@ -577,11 +568,11 @@ def stacked_bar_svg(
             legend_x = left
             legend_y += 20
         parts.append(f'<rect x="{legend_x}" y="{legend_y}" width="11" height="11" fill="{COLORS[group]}"/>')
-        parts.append(f'<text class="legend" x="{legend_x+15}" y="{legend_y+10}">{esc(group)}</text>')
+        parts.append(f'<text class="legend" x="{legend_x + 15}" y="{legend_y + 10}">{esc(group)}</text>')
         legend_x += width_guess
-    parts.append(f'<text x="{left+plot_w/2:.1f}" y="{height-12}" text-anchor="middle">System / context</text>')
+    parts.append(f'<text x="{left + plot_w / 2:.1f}" y="{height - 12}" text-anchor="middle">System / context</text>')
     parts.append(
-        f'<text transform="translate(18 {top+plot_h/2:.1f}) rotate(-90)" text-anchor="middle">Raw module work (ms / decode round)</text>'
+        f'<text transform="translate(18 {top + plot_h / 2:.1f}) rotate(-90)" text-anchor="middle">Raw module work (ms / decode round)</text>'
     )
     parts.append("</svg>")
     return "".join(parts)
@@ -610,10 +601,12 @@ def scatter_svg(
         y_value = y_max * index / 5
         x = x_pos(x_value)
         y = y_pos(y_value)
-        parts.append(f'<line class="grid" x1="{x:.1f}" x2="{x:.1f}" y1="{top}" y2="{top+plot_h}"/>')
-        parts.append(f'<line class="grid" x1="{left}" x2="{width-right}" y1="{y:.1f}" y2="{y:.1f}"/>')
-        parts.append(f'<text class="tick" x="{x:.1f}" y="{top+plot_h+22}" text-anchor="middle">{x_value:.0f}</text>')
-        parts.append(f'<text class="tick" x="{left-10}" y="{y+4:.1f}" text-anchor="end">{y_value:.0f}</text>')
+        parts.append(f'<line class="grid" x1="{x:.1f}" x2="{x:.1f}" y1="{top}" y2="{top + plot_h}"/>')
+        parts.append(f'<line class="grid" x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}"/>')
+        parts.append(
+            f'<text class="tick" x="{x:.1f}" y="{top + plot_h + 22}" text-anchor="middle">{x_value:.0f}</text>'
+        )
+        parts.append(f'<text class="tick" x="{left - 10}" y="{y + 4:.1f}" text-anchor="end">{y_value:.0f}</text>')
     for label, points in series.items():
         color = COLORS[label]
         ordered = sorted(points)
@@ -621,16 +614,18 @@ def scatter_svg(
         parts.append(f'<polyline points="{coords}" fill="none" stroke="{color}" stroke-width="2.4"/>')
         for x, y in ordered:
             parts.append(f'<circle cx="{x_pos(x):.1f}" cy="{y_pos(y):.1f}" r="3.6" fill="{color}"/>')
-    parts.append(f'<line class="axis" x1="{left}" x2="{width-right}" y1="{top+plot_h}" y2="{top+plot_h}"/>')
-    parts.append(f'<line class="axis" x1="{left}" x2="{left}" y1="{top}" y2="{top+plot_h}"/>')
+    parts.append(f'<line class="axis" x1="{left}" x2="{width - right}" y1="{top + plot_h}" y2="{top + plot_h}"/>')
+    parts.append(f'<line class="axis" x1="{left}" x2="{left}" y1="{top}" y2="{top + plot_h}"/>')
     legend_x = left
     for label in series:
         parts.append(f'<rect x="{legend_x}" y="12" width="12" height="5" fill="{COLORS[label]}"/>')
-        parts.append(f'<text class="legend" x="{legend_x+17}" y="18">{esc(label)}</text>')
+        parts.append(f'<text class="legend" x="{legend_x + 17}" y="18">{esc(label)}</text>')
         legend_x += 30 + len(label) * 7
-    parts.append(f'<text x="{left+plot_w/2:.1f}" y="{height-12}" text-anchor="middle">Effective TPOT (ms / committed token)</text>')
     parts.append(
-        f'<text transform="translate(18 {top+plot_h/2:.1f}) rotate(-90)" text-anchor="middle">Output throughput (tokens/s/GPU)</text>'
+        f'<text x="{left + plot_w / 2:.1f}" y="{height - 12}" text-anchor="middle">Effective TPOT (ms / committed token)</text>'
+    )
+    parts.append(
+        f'<text transform="translate(18 {top + plot_h / 2:.1f}) rotate(-90)" text-anchor="middle">Output throughput (tokens/s/GPU)</text>'
     )
     parts.append("</svg>")
     return "".join(parts)
@@ -664,9 +659,7 @@ def ratio_series(winners: dict[tuple, dict], workload: str) -> dict[str, list[tu
     }
 
 
-def throughput_series(
-    winners: dict[tuple, dict], workload: str, mtp_name: str
-) -> dict[str, list[tuple[float, float]]]:
+def throughput_series(winners: dict[tuple, dict], workload: str, mtp_name: str) -> dict[str, list[tuple[float, float]]]:
     mapping = {
         "AGG": ("no_mtp", "agg"),
         "AGG + AFD": ("no_mtp", "afd"),
@@ -697,9 +690,7 @@ def model_navigation(payload: dict[str, Any], current: str | None = None) -> str
     return '<div class="nav">' + "".join(links) + "</div>"
 
 
-def contract_section(
-    model: dict[str, Any], contract: dict[str, Any], arm_contracts: dict[str, dict[str, str]]
-) -> str:
+def contract_section(model: dict[str, Any], contract: dict[str, Any], arm_contracts: dict[str, dict[str, str]]) -> str:
     profile = primary_profile(model)
     mtp = primary_mtp(model)
     exact = "same-shape data" if profile["exact_shape_data"] else "projected / transferred utilization"
@@ -717,7 +708,10 @@ def contract_section(
                 ["MoE structure", esc(model["moe_structure"]), f"Top-{model['topk']}, {model['layers']} layers"],
                 [
                     "MoE backend / kernel",
-                    esc(f"{moe_backend_label(model)} / {profile['moe_kernel']}"),
+                    esc(
+                        f"{backend_display_name(arm_contracts['AGG']['moe_backend'])} / "
+                        f"{arm_contracts['AGG']['moe_kernel']}"
+                    ),
                     esc(profile["evidence"]),
                 ],
                 ["MoE precision", esc(profile["moe_quant_mode"]), exact],
@@ -746,7 +740,7 @@ def contract_section(
             [
                 esc(label),
                 esc(value["framework"]),
-                esc("MegaMoE" if value["moe_backend"] == "megamoe" else "default"),
+                esc(backend_display_name(value["moe_backend"])),
                 esc(value["moe_kernel"]),
                 esc(value["moe_precision"]),
                 '<span class="good">matched</span>',
@@ -755,7 +749,7 @@ def contract_section(
         ],
         css="wide",
     )
-    if arm_contracts["AGG"]["moe_backend"] == "megamoe":
+    if is_megamoe_backend(arm_contracts["AGG"]["moe_backend"]):
         section += (
             '<div class="callout ok"><strong>Requested MegaMoE control.</strong> AGG, AGG + MTP, '
             "AGG + AFD, and AGG + AFD + MTP all query the same model-specific measured MegaMoE module. "
@@ -777,15 +771,16 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
     arm_contracts = primary_arm_backend_contracts(payload, model)
     chart_contract = (
         f"Attention: {esc(model['attention_type'])}; {esc(model['attention_backend'])}. "
-        f"MoE: {esc(model['moe_structure'])}; backend={esc(moe_backend_label(model))}; "
-        f"kernel={esc(profile['moe_kernel'])}; "
+        f"MoE: {esc(model['moe_structure'])}; "
+        f"backend={esc(backend_display_name(arm_contracts['AGG']['moe_backend']))}; "
+        f"kernel={esc(arm_contracts['AGG']['moe_kernel'])}; "
         f"precision={esc(profile['moe_quant_mode'])}."
     )
     title = f"{model['label']} — fixed-pool AGG / AFD / MTP sweep"
     body = model_navigation(payload, model["key"])
     body += (
         f'<div class="callout"><strong>Selection objective:</strong> maximize output tokens/s/GPU while each arm '
-        f"independently satisfies ≥{speed_floor:g} committed tokens/s/user (effective TPOT ≤{1000/speed_floor:.2f} ms). "
+        f"independently satisfies ≥{speed_floor:g} committed tokens/s/user (effective TPOT ≤{1000 / speed_floor:.2f} ms). "
         "Blank entries mean that arm has no feasible configuration.</div>"
     )
     cards = []
@@ -798,10 +793,14 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
                 (f"{workload.upper()} · 72 GPU · with MTP", ratio_html(mtp_ratio)),
             ]
         )
-    body += '<div class="cards">' + "".join(
-        f'<div class="card"><div class="value">{value}</div><div class="label">{esc(label)} · AFD / AGG</div></div>'
-        for label, value in cards
-    ) + "</div>"
+    body += (
+        '<div class="cards">'
+        + "".join(
+            f'<div class="card"><div class="value">{value}</div><div class="label">{esc(label)} · AFD / AGG</div></div>'
+            for label, value in cards
+        )
+        + "</div>"
+    )
     body += contract_section(model, payload["contract"], arm_contracts)
 
     body += "<h2>2. End-to-end fixed-pool performance</h2>"
@@ -901,7 +900,17 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
             ]
         )
     body += table(
-        ["Case", "AFD config", "A µs/layer", "F µs/layer", "A→F µs/layer", "F→A µs/layer", "Cycle µs/layer", "Raw round ms", "Effective TPOT ms"],
+        [
+            "Case",
+            "AFD config",
+            "A µs/layer",
+            "F µs/layer",
+            "A→F µs/layer",
+            "F→A µs/layer",
+            "Cycle µs/layer",
+            "Raw round ms",
+            "Effective TPOT ms",
+        ],
         stage_rows,
         css="wide",
     )
@@ -932,7 +941,9 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
     composition_rows = []
     for category, values in zip(module_categories, module_values, strict=True):
         composition_rows.append(
-            [esc(category)] + [fmt(values.get(group, 0.0), 3) for group in MODULE_ORDER] + [fmt(sum(values.values()), 3)]
+            [esc(category)]
+            + [fmt(values.get(group, 0.0), 3) for group in MODULE_ORDER]
+            + [fmt(sum(values.values()), 3)]
         )
     body += table(
         ["Case", *[f"{group} ms" for group in MODULE_ORDER], "Raw work total ms"],
@@ -966,9 +977,7 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
                 if side == "agg"
                 else [materialize_afd_cluster(row, 72) for row in raw_candidates if row["total_gpus"] <= 72]
             )
-            points = [
-                (row["effective_tpot_ms"], row["output_tokens_s_gpu"]) for row in pareto_front(candidates)
-            ]
+            points = [(row["effective_tpot_ms"], row["output_tokens_s_gpu"]) for row in pareto_front(candidates)]
             series[label] = points
             y_values.extend(value for _, value in points)
         pareto_by_context[workload] = series
@@ -984,9 +993,7 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
 
     body += "<h2>6. Precision and kernel controls at 72 GPUs</h2>"
     control_rows = []
-    available_profiles = sorted(
-        {row["precision_profile"] for row in payload["rows"] if row["model"] == model["key"]}
-    )
+    available_profiles = sorted({row["precision_profile"] for row in payload["rows"] if row["model"] == model["key"]})
     for precision_key in available_profiles:
         precision = next(value for value in model["precision_profiles"] if value["key"] == precision_key)
         for workload in CONTEXTS:
@@ -1014,7 +1021,17 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
                     ]
                 )
     body += table(
-        ["Profile", "MoE precision", "MoE kernel", "ISL", "Mode", "AGG tok/s/GPU", "AFD tok/s/GPU", "AFD/AGG", "Evidence"],
+        [
+            "Profile",
+            "MoE precision",
+            "MoE kernel",
+            "ISL",
+            "Mode",
+            "AGG tok/s/GPU",
+            "AFD tok/s/GPU",
+            "AFD/AGG",
+            "Evidence",
+        ],
         control_rows,
         css="wide",
     )
@@ -1031,8 +1048,8 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
     body += table(
         ["Metric", "Value"],
         [
-            ["Valid AGG points", f"{sum(row['system_kind']=='agg' for row in model_rows):,}"],
-            ["Valid AFD points", f"{sum(row['system_kind']=='afd' for row in model_rows):,}"],
+            ["Valid AGG points", f"{sum(row['system_kind'] == 'agg' for row in model_rows):,}"],
+            ["Valid AFD points", f"{sum(row['system_kind'] == 'afd' for row in model_rows):,}"],
             ["Rejected / unsupported points", f"{len(model_failures):,}"],
             ["Top rejection classes", esc(", ".join(f"{key}={value}" for key, value in failure_counts.most_common(4)))],
             ["Primary attention evidence", esc(model["attention_evidence"])],
@@ -1066,12 +1083,14 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
         "primary_mtp": mtp,
         "attention_type": model["attention_type"],
         "attention_backend": model["attention_backend"],
-        "moe_backend": moe_backend_label(model),
+        "moe_backend": backend_display_name(arm_contracts["AGG"]["moe_backend"]),
         "moe_structure": model["moe_structure"],
         "arm_backend_contracts": arm_contracts,
         "winners": summary_rows,
     }
-    return document(title, f"GB200 · decode-only · ISL 8K/16K · OSL 1024 · speed floor {speed_floor:g} tok/s/user", body), summary
+    return document(
+        title, f"GB200 · decode-only · ISL 8K/16K · OSL 1024 · speed floor {speed_floor:g} tok/s/user", body
+    ), summary
 
 
 def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed_floor: float) -> str:
@@ -1111,10 +1130,16 @@ def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed
         backend_rows,
         css="wide",
     )
+    measured_models = [
+        summary["label"]
+        for summary in summaries
+        if summary["arm_backend_contracts"]["AGG"]["moe_backend"] == "measured-megamoe"
+    ]
+    measured_text = ", ".join(esc(value) for value in measured_models) or "none"
     body += (
-        '<div class="callout"><strong>Backend policy.</strong> MegaMoE is used for both AGG and AFD only for '
-        "DeepSeek-V4-Pro, where AIC has a model-specific measured MegaMoE contract. All other primary comparisons "
-        "use the same SGLang backend and kernel on both arms; no unsupported MegaMoE proxy is substituted.</div>"
+        '<div class="callout"><strong>Backend policy.</strong> Exact measured MegaMoE is used in all four arms '
+        f"for: {measured_text}. Every model is required to have one identical framework, MoE backend, kernel, "
+        "precision, and attention backend across AGG, AGG + AFD, AGG + MTP, and AGG + AFD + MTP.</div>"
     )
     body += "<h3>Four-arm backend equality audit</h3>"
     body += table(
@@ -1138,9 +1163,7 @@ def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed
     for summary in summaries:
         mtp = summary["primary_mtp"]
         for workload in CONTEXTS:
-            record = next(
-                row for row in summary["winners"] if row["workload"] == workload and row["total_gpus"] == 72
-            )
+            record = next(row for row in summary["winners"] if row["workload"] == workload and row["total_gpus"] == 72)
             headline_rows.append(
                 [
                     f'<a href="{summary["model"]}.html">{esc(summary["label"])}</a>',
@@ -1157,7 +1180,19 @@ def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed
                 ]
             )
     body += table(
-        ["Model", "ISL", "AGG", "AGG+AFD", "AFD/AGG", "Best A:F no MTP", "AGG+MTP", "AGG+AFD+MTP", "AFD/AGG with MTP", "Best A:F with MTP", "MTP"],
+        [
+            "Model",
+            "ISL",
+            "AGG",
+            "AGG+AFD",
+            "AFD/AGG",
+            "Best A:F no MTP",
+            "AGG+MTP",
+            "AGG+AFD+MTP",
+            "AFD/AGG with MTP",
+            "Best A:F with MTP",
+            "MTP",
+        ],
         headline_rows,
         css="wide",
     )
@@ -1173,7 +1208,9 @@ def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed
                     if row["workload"] == workload and row[key]["ratio"] is not None
                 ]
                 series[summary["label"]] = points
-                COLORS.setdefault(summary["label"], ("#0072B2", "#009E73", "#D55E00", "#CC79A7", "#E69F00")[len(series)-1])
+                COLORS.setdefault(
+                    summary["label"], ("#0072B2", "#009E73", "#D55E00", "#CC79A7", "#E69F00")[len(series) - 1]
+                )
             max_ratio = max(value for points in series.values() for _, value in points)
             body += f"<h3>{workload.upper()} · {mode}</h3>"
             body += figure(
@@ -1213,7 +1250,21 @@ def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed
                 ]
             )
     body += table(
-        ["Model", "ISL", "GPUs", "AGG", "AGG+AFD", "AFD/AGG", "Best A:F no MTP", "AGG+MTP", "AGG+AFD+MTP", "AFD/AGG with MTP", "Best A:F with MTP", "MoE kernel", "MoE precision"],
+        [
+            "Model",
+            "ISL",
+            "GPUs",
+            "AGG",
+            "AGG+AFD",
+            "AFD/AGG",
+            "Best A:F no MTP",
+            "AGG+MTP",
+            "AGG+AFD+MTP",
+            "AFD/AGG with MTP",
+            "Best A:F with MTP",
+            "MoE kernel",
+            "MoE precision",
+        ],
         matrix_rows,
         css="wide",
     )
@@ -1222,11 +1273,23 @@ def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed
     body += table(
         ["Term", "Meaning"],
         [
-            ["Ratio", "Best AGG+AFD tokens/s/GPU divided by best AGG tokens/s/GPU at the same model, context, MTP mode, precision, kernel, total GPUs, and user-speed floor."],
+            [
+                "Ratio",
+                "Best AGG+AFD tokens/s/GPU divided by best AGG tokens/s/GPU at the same model, context, MTP mode, precision, kernel, total GPUs, and user-speed floor.",
+            ],
             ["AFD batch", "Requests per physical A GPU. AIC a_batch_size_per_worker=batch_per_A_GPU×A_TP."],
-            ["Module work", "Serial-equivalent operator counters. It is not additive E2E latency when A/F pipeline overlap is active."],
-            ["E2E", "Full resident decode-round wall time from the AIC session; MTP effective TPOT divides this time by committed progress P."],
-            ["HYBRID", "Uses silicon rows when present and estimates uncovered shapes. Model pages identify projected attention/MoE contracts explicitly."],
+            [
+                "Module work",
+                "Serial-equivalent operator counters. It is not additive E2E latency when A/F pipeline overlap is active.",
+            ],
+            [
+                "E2E",
+                "Full resident decode-round wall time from the AIC session; MTP effective TPOT divides this time by committed progress P.",
+            ],
+            [
+                "HYBRID",
+                "Uses silicon rows when present and estimates uncovered shapes. Model pages identify projected attention/MoE contracts explicitly.",
+            ],
         ],
     )
     body += '<p class="foot">All pages and figures are self-contained; copy the whole report directory or any individual HTML file.</p>'
