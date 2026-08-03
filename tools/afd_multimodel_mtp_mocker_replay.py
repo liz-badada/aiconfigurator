@@ -176,6 +176,7 @@ def replay_case(
     result = json.loads(report.read_text(encoding="utf-8"))
     expected_tpot_ms = float(row["effective_tpot_ms"])
     expected_output_tps = float(row["output_tokens_s"])
+    finite_wave_efficiency = result["output_throughput_tok_s"] / expected_output_tps
     return {
         "case_id": case_id,
         "model": row["model"],
@@ -197,7 +198,12 @@ def replay_case(
         "duration_ms": result["duration_ms"],
         "output_throughput_tok_s": result["output_throughput_tok_s"],
         "expected_output_throughput_tok_s": expected_output_tps,
-        "output_throughput_error_pct": (result["output_throughput_tok_s"] / expected_output_tps - 1.0) * 100.0,
+        "finite_wave_efficiency_vs_aic_steady_state": finite_wave_efficiency,
+        "output_throughput_error_pct": (finite_wave_efficiency - 1.0) * 100.0,
+        "throughput_comparison_contract": (
+            "Mocker output throughput includes finite-wave fill/drain and the stochastic final-wave tail; "
+            "the AIC reference is a saturated steady-state rate. Increase --waves to check convergence."
+        ),
         "mean_tpot_ms": result["mean_tpot_ms"],
         "expected_steady_state_tpot_ms": expected_tpot_ms,
         "mean_tpot_error_pct": (result["mean_tpot_ms"] / expected_tpot_ms - 1.0) * 100.0,
@@ -318,7 +324,9 @@ def main() -> int:
                 "profile_note": (
                     "AIC supplies one fixed service unit's raw decode-round time. Mocker validates unit replication, "
                     "round-robin routing, request lifecycle, finite-wave tails, and stochastic MTP burst accounting; "
-                    "it does not re-estimate attention or MoE kernels."
+                    "it does not re-estimate attention or MoE kernels. Mocker's reported output throughput is a "
+                    "finite-wave measurement, while expected_output_throughput_tok_s is AIC's saturated "
+                    "steady-state reference."
                 ),
                 "results": results,
             },

@@ -95,6 +95,25 @@ uv run python tools/afd_multimodel_mtp_mocker_replay.py \
   --total-gpus 16 24 36 48 72
 ```
 
+The default one-wave run intentionally includes startup, drain, and the
+stochastic final-request tail. Its output throughput is therefore not expected
+to equal AIC's saturated steady-state rate, especially with MTP. To validate
+steady-state convergence for one selected point, use a longer output and many
+waves:
+
+```bash
+uv run python tools/afd_multimodel_mtp_mocker_replay.py \
+  --sweep /path/to/measured_only_sweep.json \
+  --dynamo /path/to/dynamo \
+  --output-dir /path/to/mocker_steady_state \
+  --models qwen3_235b --workloads 8k --total-gpus 16 \
+  --output-tokens 128 --waves 64
+```
+
+Compare `mean_tpot_ms` with `expected_steady_state_tpot_ms` first. The JSON
+field `finite_wave_efficiency_vs_aic_steady_state` separately shows how much
+fill/drain remains in the finite replay.
+
 ## 5. Tests
 
 ```bash
