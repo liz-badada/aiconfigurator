@@ -954,6 +954,50 @@ class AFDInferenceSession:
         f_model = get_model(self._model_path, self._f_model_config, self._backend.name.value)
         return a_model, f_model
 
+    @staticmethod
+    def _router_ops(ops_iter) -> list:
+        """Find router ops, including routers nested inside overlap wrappers."""
+
+        routers = []
+        seen: set[int] = set()
+
+        def visit(op) -> None:
+            if id(op) in seen:
+                return
+            seen.add(id(op))
+            if "router" in op._name.lower():
+                routers.append(op)
+                return
+            for attribute in ("_group_a", "_group_b"):
+                for inner in getattr(op, attribute, ()):
+                    visit(inner)
+
+        for op in ops_iter:
+            visit(op)
+        return routers
+
+    @staticmethod
+    def _without_router_ops(ops_iter) -> list:
+        """Return an operation view with routers removed from overlap wrappers."""
+
+        from aiconfigurator.sdk.operations import OverlapOp
+
+        def filter_op(op):
+            if "router" in op._name.lower():
+                return None
+            if not isinstance(op, OverlapOp):
+                return op
+            group_a = [value for inner in op._group_a if (value := filter_op(inner)) is not None]
+            group_b = [value for inner in op._group_b if (value := filter_op(inner)) is not None]
+            return OverlapOp(
+                op._name,
+                group_a=group_a,
+                group_b=group_b,
+                seq_split=int(getattr(op, "_seq_split", 1)),
+            )
+
+        return [value for op in ops_iter if (value := filter_op(op)) is not None]
+
     def _sum_latency(
         self,
         ops_iter,
@@ -1492,10 +1536,10 @@ class AFDInferenceSession:
         f_partition = build_afd_ops_partition(f_model, phase=ops_phase, boundary_on_attn=cfg.boundary_on_attn)
         afd_moe_time_ms = self._afd_moe_time_ms if phase == "decode" else None
         if afd_moe_time_ms is not None:
-            router_ops = [op for op in a_partition.ffn_ops if "router" in op._name.lower()]
+            router_ops = self._router_ops(a_partition.ffn_ops)
             a_partition.attn_ops.extend(router_ops)
-            a_partition.ffn_ops = [op for op in a_partition.ffn_ops if op not in router_ops]
-            f_partition.ffn_ops = [op for op in f_partition.ffn_ops if "router" not in op._name.lower()]
+            a_partition.ffn_ops = self._without_router_ops(a_partition.ffn_ops)
+            f_partition.ffn_ops = self._without_router_ops(f_partition.ffn_ops)
 
         isl = runtime_config.isl
         osl = runtime_config.osl or 1

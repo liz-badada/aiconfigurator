@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import Any
 
 from aiconfigurator.sdk import common
+from aiconfigurator.sdk.afd_moe_profile import (
+    AFDMoEStageKey,
+    AFDMoEStageMeasurement,
+    AFDMoEStageProfile,
+)
 from aiconfigurator.sdk.backends.factory import get_backend
 from aiconfigurator.sdk.config import AFDConfig
 from aiconfigurator.sdk.inference_session import AFDInferenceSession, InferenceSession
@@ -27,7 +32,7 @@ SYSTEM = "gb200"
 BACKEND = "sglang"
 DATABASE_MODE = "HYBRID"
 GPUS_PER_NODE = 4
-TOTAL_GPU_GRID = tuple(range(2 * GPUS_PER_NODE, 72 + 1, GPUS_PER_NODE))
+TOTAL_GPU_GRID = (16, 24, 36, 48, 72)
 PIPELINE_MODEL = "conservative"
 DECODE_STRIDE = 128
 A_TPS = (1, 2, 4)
@@ -78,6 +83,7 @@ class PrecisionProfile:
     exact_shape_data: bool
     primary: bool = False
     total_gpu_grid: tuple[int, ...] = TOTAL_GPU_GRID
+    measured_moe_precision: str | None = None
     gemm_quant_mode: str | None = None
     kvcache_quant_mode: str | None = None
     fmha_quant_mode: str | None = None
@@ -92,6 +98,7 @@ class ModelSpec:
     moe_backend: str | None
     attention_heads: int
     layers: int
+    moe_layers: int
     topk: int
     parameter_note: str
     attention_type: str
@@ -116,6 +123,7 @@ MODELS = (
         moe_backend=None,
         attention_heads=64,
         layers=94,
+        moe_layers=94,
         topk=8,
         parameter_note="235B total / 22B active",
         attention_type="Full-context GQA, 64 query heads / 4 KV heads, head_dim=128",
@@ -130,6 +138,7 @@ MODELS = (
                 evidence="same-shape GB200 silicon",
                 exact_shape_data=True,
                 primary=True,
+                measured_moe_precision="fp4",
             ),
             PrecisionProfile(
                 key="fp8",
@@ -159,6 +168,7 @@ MODELS = (
         moe_backend=None,
         attention_heads=48,
         layers=62,
+        moe_layers=62,
         topk=8,
         parameter_note="about 230B total / about 10B active",
         attention_type="Full-context GQA, 48 query heads / 8 KV heads, head_dim=128",
@@ -173,6 +183,7 @@ MODELS = (
                 evidence="same-shape GB200 silicon; deployment precision sensitivity",
                 exact_shape_data=True,
                 primary=True,
+                measured_moe_precision="fp4",
                 gemm_quant_mode="fp8_block",
                 kvcache_quant_mode="bfloat16",
                 fmha_quant_mode="bfloat16",
@@ -208,6 +219,7 @@ MODELS = (
         moe_backend=None,
         attention_heads=64,
         layers=60,
+        moe_layers=57,
         topk=4,
         parameter_note="428B total / about 23B active",
         attention_type="MiniMax Sparse Attention: 16 x 128-token selected blocks (2,048-token sparse budget)",
@@ -222,6 +234,7 @@ MODELS = (
                 evidence="exact target shape with cross-shape utilization transfer",
                 exact_shape_data=False,
                 primary=True,
+                measured_moe_precision="fp4",
             ),
             PrecisionProfile(
                 key="fp8_projected",
@@ -258,6 +271,7 @@ MODELS = (
         moe_backend=None,
         attention_heads=64,
         layers=43,
+        moe_layers=43,
         topk=6,
         parameter_note="284B total / 13B active",
         attention_type="21 CSA + 20 HCA + 2 SWA layers, 128-token local window, mHC",
@@ -272,6 +286,7 @@ MODELS = (
                 evidence="same-shape GB200 silicon",
                 exact_shape_data=True,
                 primary=True,
+                measured_moe_precision="fp4",
             ),
             PrecisionProfile(
                 key="fp8",
@@ -301,6 +316,7 @@ MODELS = (
         moe_backend="megamoe",
         attention_heads=128,
         layers=61,
+        moe_layers=61,
         topk=6,
         parameter_note="1.6T total / 49B active",
         attention_type="30 CSA + 31 HCA layers, 128-token local window, mHC",
@@ -315,6 +331,7 @@ MODELS = (
                 evidence="same-shape measured MegaMoE module; utilization-hold above measured token range",
                 exact_shape_data=True,
                 primary=True,
+                measured_moe_precision="fp4",
             ),
         ),
         scenarios=(
@@ -342,6 +359,82 @@ def precision_for(model_key: str, precision_key: str) -> PrecisionProfile:
 
 def scenario_for(model_key: str, scenario_name: str) -> Scenario:
     return next(scenario for scenario in MODEL_BY_KEY[model_key].scenarios if scenario.name == scenario_name)
+
+
+@cache
+def measured_profile(path: str) -> AFDMoEStageProfile:
+    return AFDMoEStageProfile.load(path)
+
+
+def measured_stage(
+    profile_path: str | None,
+    *,
+    spec: ModelSpec,
+    precision: PrecisionProfile,
+    scenario: Scenario,
+    stage: str,
+    topology: str,
+    logical_batch_per_source_rank: int,
+    microbatches: int,
+) -> tuple[AFDMoEStageKey | None, AFDMoEStageMeasurement | None]:
+    if profile_path is None or precision.measured_moe_precision is None:
+        return None, None
+    key = AFDMoEStageKey(
+        model_path=spec.model_path,
+        system=SYSTEM,
+        stage=stage,
+        topology=topology,
+        logical_batch_per_source_rank=logical_batch_per_source_rank,
+        mtp_nextn=scenario.nextn,
+        microbatches=microbatches,
+        moe_layers=spec.moe_layers,
+        moe_precision=precision.measured_moe_precision,
+    )
+    return key, measured_profile(profile_path).find(key)
+
+
+def unmeasured_moe_fraction(spec: ModelSpec, scenario: Scenario) -> float:
+    """Fraction of AIC's MoE proxy work not covered by the measured stage.
+
+    The measured stage executes ``q * moe_layers`` expert layers, where
+    ``q=nextn+1``. AIC additionally approximates non-MoE decoder layers with
+    the model's MoE op and adds ``nextn`` auxiliary layer-equivalents.
+    """
+
+    total_equivalents = scenario.verification_width * spec.layers + scenario.nextn
+    measured_equivalents = scenario.verification_width * spec.moe_layers
+    return max(total_equivalents - measured_equivalents, 0) / total_equivalents
+
+
+def measurement_record(
+    key: AFDMoEStageKey | None,
+    measurement: AFDMoEStageMeasurement | None,
+    *,
+    profile_path: str | None,
+    generic_residual_ms: float = 0.0,
+) -> dict[str, Any]:
+    if key is None:
+        return {"requested": False, "used": False, "reason": "precision has no measured profile contract"}
+    if measurement is None:
+        return {
+            "requested": True,
+            "used": False,
+            "reason": "no exact key",
+            "profile": profile_path,
+            "key": asdict(key),
+        }
+    return {
+        "requested": True,
+        "used": True,
+        "profile": profile_path,
+        "key": asdict(key),
+        "measured_latency_ms": measurement.latency_ms,
+        "generic_residual_ms": generic_residual_ms,
+        "source_commit": measurement.source_commit,
+        "source_tree_sha256": measurement.source_tree_sha256,
+        "source_result": measurement.source_result,
+        "evidence": measurement.evidence,
+    }
 
 
 def op_group(name: str) -> str:
@@ -377,6 +470,132 @@ def operation_rows(side: str, values: dict[str, float], multiplier: int = 1) -> 
     ]
 
 
+def average_overlap_parts(model, database, runtime_config, op) -> tuple[float, float]:
+    """Return serialized router and expert-only overlap latency per decode step."""
+
+    groups = (getattr(op, "_group_a", ()), getattr(op, "_group_b", ()))
+    if not any(groups):
+        return 0.0, 0.0
+    sequence_batch = int(runtime_config.batch_size)
+    verification_width = int(getattr(model, "_nextn", 0) or 0) + 1
+    token_batch = sequence_batch * verification_width
+    beam_width = int(runtime_config.beam_width)
+    decode_steps = max(int(runtime_config.osl or 1) - 1, 1)
+    router_total = 0.0
+    expert_total = 0.0
+    repeat_total = 0
+    for offset in range(0, decode_steps, DECODE_STRIDE):
+        repeat = min(DECODE_STRIDE, decode_steps - offset)
+        group_router: list[float] = []
+        group_expert: list[float] = []
+        for group in groups:
+            router_ms = 0.0
+            expert_ms = 0.0
+            for inner in group:
+                result = inner.query(
+                    database,
+                    x=token_batch * beam_width,
+                    batch_size=token_batch,
+                    beam_width=beam_width,
+                    s=int(runtime_config.isl) + offset + 1,
+                    gen_seq_imbalance_correction_scale=(runtime_config.gen_seq_imbalance_correction_scale),
+                )
+                if "router" in inner._name.lower():
+                    router_ms += float(result)
+                else:
+                    expert_ms += float(result)
+            group_router.append(router_ms)
+            group_expert.append(expert_ms)
+        router_total += sum(group_router) * repeat
+        expert_total += max(group_expert, default=0.0) * repeat
+        repeat_total += repeat
+    denominator = max(repeat_total, 1)
+    return router_total / denominator, expert_total / denominator
+
+
+def replace_agg_moe_stage(
+    generation: dict[str, float],
+    sources: dict[str, str],
+    *,
+    model,
+    database,
+    runtime_config,
+    spec: ModelSpec,
+    scenario: Scenario,
+    measurement: AFDMoEStageMeasurement,
+) -> tuple[float, float]:
+    """Replace generic expert work while retaining router and uncovered work."""
+
+    moe_names = [name for name in generation if op_group(name) == "MoE / shared expert"]
+    if not moe_names:
+        raise RuntimeError("measured MoE profile matched, but the AGG graph has no MoE operation")
+    generic_expert_ms = 0.0
+    nested_router_ms = 0.0
+    ops_by_name = {op._name: op for op in model.generation_ops}
+    for name in moe_names:
+        op = ops_by_name.get(name)
+        if op is not None and (hasattr(op, "_group_a") or hasattr(op, "_group_b")):
+            router_ms, expert_ms = average_overlap_parts(model, database, runtime_config, op)
+            nested_router_ms += router_ms
+            generic_expert_ms += expert_ms
+        else:
+            generic_expert_ms += generation[name]
+        del generation[name]
+        sources.pop(name, None)
+
+    generic_residual_ms = generic_expert_ms * unmeasured_moe_fraction(spec, scenario)
+    generation["generation_measured_moe_stage"] = measurement.latency_ms + generic_residual_ms
+    sources["generation_measured_moe_stage"] = "measured-profile"
+    if nested_router_ms:
+        generation["generation_measured_moe_router"] = nested_router_ms
+        sources["generation_measured_moe_router"] = "aic-generic-router"
+    return generic_expert_ms, generic_residual_ms
+
+
+def generic_afd_residual(
+    summary,
+    *,
+    f_model,
+    database,
+    runtime_config,
+    spec: ModelSpec,
+    scenario: Scenario,
+    microbatches: int,
+) -> tuple[float, dict[str, float]]:
+    """Compute the AIC work outside an exact measured AFD MoE boundary."""
+
+    per_ops = summary.get_per_ops_data() or {}
+    f_ops = {name: float(value) for name, value in per_ops.get("decode_f_worker", {}).items()}
+    a_ops = {name: float(value) for name, value in per_ops.get("decode_a_worker", {}).items()}
+    ops_by_name = {op._name: op for op in f_model.generation_ops}
+    generic_expert_ms = 0.0
+    for name, value in f_ops.items():
+        if op_group(name) != "MoE / shared expert":
+            continue
+        op = ops_by_name.get(name)
+        if op is not None and (hasattr(op, "_group_a") or hasattr(op, "_group_b")):
+            _router_ms, expert_ms = average_overlap_parts(f_model, database, runtime_config, op)
+            generic_expert_ms += expert_ms
+        else:
+            generic_expert_ms += value
+
+    expert_residual_ms = generic_expert_ms * microbatches * unmeasured_moe_fraction(spec, scenario)
+    f_collective_ms = sum(value for name, value in f_ops.items() if op_group(name) == "F collective")
+    a_combine_ms = sum(value for name, value in a_ops.items() if op_group(name) == "A combine")
+    raw = dict(summary.get_result_dict() or {})
+    transfer_ms = (float(raw["decode_t_a2f_layer"]) + float(raw["decode_t_f2a_layer"])) * spec.layers
+    generic_comm_ms = (f_collective_ms + a_combine_ms + transfer_ms) * microbatches
+    uncovered_layer_fraction = max(spec.layers - spec.moe_layers, 0) / spec.layers
+    comm_residual_ms = generic_comm_ms * uncovered_layer_fraction
+    components = {
+        "generic_expert_proxy_ms": generic_expert_ms * microbatches,
+        "expert_residual_ms": expert_residual_ms,
+        "generic_stage_comm_ms": generic_comm_ms,
+        "comm_residual_ms": comm_residual_ms,
+    }
+    return expert_residual_ms + comm_residual_ms, components
+
+
 @cache
 def task_for(model_key: str, workload: str, scenario_name: str, precision_key: str) -> Task:
     spec = MODEL_BY_KEY[model_key]
@@ -400,9 +619,7 @@ def task_for(model_key: str, workload: str, scenario_name: str, precision_key: s
         ),
         moe_quant_mode=common.MoEQuantMode[precision.moe_quant_mode],
         kvcache_quant_mode=(
-            common.KVCacheQuantMode[precision.kvcache_quant_mode]
-            if precision.kvcache_quant_mode is not None
-            else None
+            common.KVCacheQuantMode[precision.kvcache_quant_mode] if precision.kvcache_quant_mode is not None else None
         ),
         fmha_quant_mode=(
             common.FMHAQuantMode[precision.fmha_quant_mode] if precision.fmha_quant_mode is not None else None
@@ -435,6 +652,7 @@ def agg_point(
     world: int,
     tp: int,
     local_batch: int,
+    measured_profile_path: str | None,
 ) -> dict[str, Any]:
     task = task_for(model_key, workload, scenario_name, precision_key)
     scenario = scenario_for(model_key, scenario_name)
@@ -446,15 +664,38 @@ def agg_point(
         database_for(model_key, workload, scenario_name, precision_key),
         get_backend(BACKEND),
     )
+    runtime_config = task.build_runtime_config(batch_size=local_batch)
     summary = session.run_static(
-        task.build_runtime_config(batch_size=local_batch),
+        runtime_config,
         mode="static_gen",
         stride=DECODE_STRIDE,
     )
     decode_steps = max(int(WORKLOADS[workload]["osl"]) - 1, 1)
-    generation = {
-        name: float(value) / decode_steps for name, value in summary.get_generation_latency_dict().items()
-    }
+    generation = {name: float(value) / decode_steps for name, value in summary.get_generation_latency_dict().items()}
+    sources = dict(summary.get_generation_source_dict())
+    measured_key, measurement = measured_stage(
+        measured_profile_path,
+        spec=MODEL_BY_KEY[model_key],
+        precision=precision,
+        scenario=scenario,
+        stage="agg",
+        topology=f"ep{world}",
+        logical_batch_per_source_rank=local_batch,
+        microbatches=1,
+    )
+    generic_moe_ms = 0.0
+    generic_residual_ms = 0.0
+    if measurement is not None:
+        generic_moe_ms, generic_residual_ms = replace_agg_moe_stage(
+            generation,
+            sources,
+            model=model,
+            database=database_for(model_key, workload, scenario_name, precision_key),
+            runtime_config=runtime_config,
+            spec=MODEL_BY_KEY[model_key],
+            scenario=scenario,
+            measurement=measurement,
+        )
     raw_round_ms = sum(generation.values())
     result = summary.get_result_dict() or {}
     global_batch = local_batch * dp
@@ -478,11 +719,21 @@ def agg_point(
         "memory_gb": float(result.get("memory", math.nan)),
         "oom": bool(summary.check_oom() or summary.check_kv_cache_oom()),
         "modules": operation_rows("AGG", generation),
-        "op_sources": dict(summary.get_generation_source_dict()),
+        "op_sources": sources,
+        "moe_measurement": measurement_record(
+            measured_key,
+            measurement,
+            profile_path=measured_profile_path,
+            generic_residual_ms=generic_residual_ms,
+        )
+        | {"generic_expert_proxy_ms": generic_moe_ms},
         "backend_contract": {
             "framework": f"SGLang {MODEL_BY_KEY[model_key].backend_version}",
-            "moe_backend": MODEL_BY_KEY[model_key].moe_backend or "default",
-            "moe_kernel": precision.moe_kernel,
+            "moe_backend": (
+                "measured-megamoe" if measurement is not None else MODEL_BY_KEY[model_key].moe_backend or "default"
+            ),
+            "moe_time_source": "exact-measured-profile" if measurement is not None else "aic-database",
+            "moe_kernel": "measured-profile" if measurement is not None else precision.moe_kernel,
             "moe_precision": model_config.moe_quant_mode.name,
             "attention_backend": MODEL_BY_KEY[model_key].attention_backend,
         },
@@ -501,6 +752,7 @@ def agg_cluster_rows(
     scenario: Scenario,
     precision: PrecisionProfile,
     total_gpus: int,
+    measured_profile_path: str | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -522,6 +774,7 @@ def agg_cluster_rows(
                         world,
                         tp,
                         int(local_batch),
+                        measured_profile_path,
                     )
                     if point["oom"]:
                         continue
@@ -568,6 +821,7 @@ def afd_point(
     a_tp: int,
     batch_per_a_gpu: int,
     microbatches: int,
+    measured_profile_path: str | None,
 ) -> dict[str, Any]:
     task = task_for(spec.key, workload, scenario.name, precision.key)
     database = database_for(spec.key, workload, scenario.name, precision.key)
@@ -604,19 +858,59 @@ def afd_point(
         combined_with_pd=False,
     )
     global_requests = a_gpus * batch_per_a_gpu
-    summary = AFDInferenceSession(
-        model_path=spec.model_path,
-        a_model_config=a_config,
-        f_model_config=f_config,
-        database=database,
-        backend=get_backend(BACKEND),
-        afd_config=afd_config,
-        decode_stride=DECODE_STRIDE,
-    ).run_afd(
-        task.build_runtime_config(batch_size=global_requests),
-        phase="decode",
-        speculative_profile=SpeculativeDecodingProfile.from_inputs(scenario.nextn, scenario.accepted_drafts),
+    measured_key, measurement = measured_stage(
+        measured_profile_path,
+        spec=spec,
+        precision=precision,
+        scenario=scenario,
+        stage="afd",
+        topology=f"{a_gpus}A{f_gpus}F",
+        logical_batch_per_source_rank=batch_per_a_gpu,
+        microbatches=microbatches,
     )
+    runtime_config = task.build_runtime_config(batch_size=global_requests)
+    speculative_profile = SpeculativeDecodingProfile.from_inputs(scenario.nextn, scenario.accepted_drafts)
+
+    def simulate(afd_moe_time_ms: float | None):
+        return AFDInferenceSession(
+            model_path=spec.model_path,
+            a_model_config=a_config,
+            f_model_config=f_config,
+            database=database,
+            backend=get_backend(BACKEND),
+            afd_config=afd_config,
+            afd_moe_time_ms=afd_moe_time_ms,
+            decode_stride=DECODE_STRIDE,
+        ).run_afd(
+            runtime_config,
+            phase="decode",
+            speculative_profile=speculative_profile,
+        )
+
+    generic_residual_ms = 0.0
+    residual_components: dict[str, float] = {}
+    measured_stage_ms = None
+    if measurement is None:
+        summary = simulate(None)
+    else:
+        generic_summary = simulate(None)
+        if generic_summary.check_oom() or generic_summary.check_kv_cache_oom():
+            raise RuntimeError("OOM")
+        a_workers = a_gpus // a_tp
+        a_micro_batch_size = math.ceil(a_batch_size / microbatches)
+        f_micro_batch_size = a_workers * a_micro_batch_size
+        f_model = get_model(spec.model_path, f_config, BACKEND)
+        generic_residual_ms, residual_components = generic_afd_residual(
+            generic_summary,
+            f_model=f_model,
+            database=database,
+            runtime_config=task.build_runtime_config(batch_size=f_micro_batch_size),
+            spec=spec,
+            scenario=scenario,
+            microbatches=microbatches,
+        )
+        measured_stage_ms = measurement.latency_ms + generic_residual_ms
+        summary = simulate(measured_stage_ms)
     if summary.check_oom() or summary.check_kv_cache_oom():
         raise RuntimeError("OOM")
 
@@ -636,11 +930,7 @@ def afd_point(
     t_a2f_layer = float(raw["decode_t_a2f_layer"])
     t_f2a_layer = float(raw["decode_t_f2a_layer"])
     pipeline_fill_ms = t_a_layer + t_f_layer + t_a2f_layer + t_f2a_layer
-    t_cycle_layer = (
-        pipeline_fill_ms
-        if microbatches < 2
-        else max(t_a_layer + t_a2f_layer, t_f_layer + t_f2a_layer)
-    )
+    t_cycle_layer = pipeline_fill_ms if microbatches < 2 else max(t_a_layer + t_a2f_layer, t_f_layer + t_f2a_layer)
     modules = (
         operation_rows("A", a_ops, microbatches)
         + operation_rows("F", f_ops, microbatches)
@@ -682,10 +972,21 @@ def afd_point(
         "a_memory_gb": float(raw["(a)memory"]),
         "f_memory_gb": float(raw["(f)memory"]),
         "modules": modules,
+        "moe_measurement": measurement_record(
+            measured_key,
+            measurement,
+            profile_path=measured_profile_path,
+            generic_residual_ms=generic_residual_ms,
+        )
+        | {
+            "injected_stage_ms": measured_stage_ms,
+            "residual_components": residual_components,
+        },
         "backend_contract": {
             "framework": f"SGLang {spec.backend_version}",
-            "moe_backend": spec.moe_backend or "default",
-            "moe_kernel": precision.moe_kernel,
+            "moe_backend": "measured-megamoe" if measurement is not None else spec.moe_backend or "default",
+            "moe_time_source": "exact-measured-profile" if measurement is not None else "aic-database",
+            "moe_kernel": "measured-profile" if measurement is not None else precision.moe_kernel,
             "moe_precision": f_config.moe_quant_mode.name,
             "attention_backend": spec.attention_backend,
         },
@@ -704,6 +1005,7 @@ def afd_cluster_rows(
     scenario: Scenario,
     precision: PrecisionProfile,
     total_gpus: int,
+    measured_profile_path: str | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -732,6 +1034,7 @@ def afd_cluster_rows(
                                 a_tp=a_tp,
                                 batch_per_a_gpu=int(batch_per_a_gpu),
                                 microbatches=microbatches,
+                                measured_profile_path=measured_profile_path,
                             )
                         )
                     except Exception as error:
@@ -764,6 +1067,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     selected_models = [MODEL_BY_KEY[key] for key in args.models]
     selected_workloads = list(args.workloads)
     selected_totals = tuple(sorted(set(args.total_gpus)))
+    measured_profile_path = str(args.afd_moe_profile.resolve()) if args.afd_moe_profile is not None else None
+    if measured_profile_path is not None:
+        measured_profile(measured_profile_path)
     agg_rows: list[dict[str, Any]] = []
     afd_rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -782,8 +1088,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             f"[{index}/{len(groups)}] {spec.key} {workload} {scenario.name} {precision.key} {total_gpus} GPU",
             flush=True,
         )
-        new_agg, agg_failures = agg_cluster_rows(spec, workload, scenario, precision, total_gpus)
-        new_afd, afd_failures = afd_cluster_rows(spec, workload, scenario, precision, total_gpus)
+        new_agg, agg_failures = agg_cluster_rows(
+            spec,
+            workload,
+            scenario,
+            precision,
+            total_gpus,
+            measured_profile_path,
+        )
+        new_afd, afd_failures = afd_cluster_rows(
+            spec,
+            workload,
+            scenario,
+            precision,
+            total_gpus,
+            measured_profile_path,
+        )
+        if args.require_measured_moe:
+            new_agg = [row for row in new_agg if row["moe_measurement"]["used"]]
+            new_afd = [row for row in new_afd if row["moe_measurement"]["used"]]
         agg_rows.extend(new_agg)
         afd_rows.extend(new_afd)
         failures.extend(agg_failures)
@@ -824,6 +1147,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "agg_world_rule": "all 4-GPU increments; idle remainder is counted in the fixed total-GPU denominator",
             "static_tp_grid": list(STATIC_TPS),
             "speed_floors_tokps_per_user": list(SPEED_FLOORS),
+            "afd_moe_profile": measured_profile_path,
+            "require_measured_moe": bool(args.require_measured_moe),
+            "afd_moe_profile_policy": (
+                "exact model/system/stage/topology/source-batch/MTP/microbatch/layer/precision match; "
+                "generic AIC fallback is explicit when no point matches"
+            ),
             "batch_semantics": "batch_per_a_gpu; a_batch_size_per_worker=batch_per_a_gpu*a_tp",
             "mtp_compute": "verification width q=nextn+1; transformer work=q*L+nextn layer-equivalents",
             "mtp_progress": "committed output progress=1+expected accepted draft tokens",
@@ -863,7 +1192,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workloads", nargs="+", choices=sorted(WORKLOADS), default=sorted(WORKLOADS))
     parser.add_argument("--total-gpus", nargs="+", type=int, default=list(TOTAL_GPU_GRID))
     parser.add_argument("--profile-scope", choices=("primary", "all"), default="all")
+    parser.add_argument(
+        "--afd-moe-profile",
+        type=Path,
+        help="Optional exact-only measured AFD MoE-stage profile JSON",
+    )
+    parser.add_argument(
+        "--require-measured-moe",
+        action="store_true",
+        help="Drop candidates without an exact measured MoE point instead of using generic AIC",
+    )
     args = parser.parse_args()
+    if args.require_measured_moe and args.afd_moe_profile is None:
+        parser.error("--require-measured-moe requires --afd-moe-profile")
     invalid = [value for value in args.total_gpus if value < 2 * GPUS_PER_NODE or value % GPUS_PER_NODE]
     if invalid:
         parser.error(f"--total-gpus values must be multiples of {GPUS_PER_NODE} and at least 8: {invalid}")

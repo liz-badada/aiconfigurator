@@ -15,6 +15,7 @@ from aiconfigurator.cli.api import EstimateResult, _combine_afd_static_estimate_
 from aiconfigurator.sdk.config import AFDConfig, RuntimeConfig
 from aiconfigurator.sdk.inference_session import AFDInferenceSession
 from aiconfigurator.sdk.inference_summary import InferenceSummary
+from aiconfigurator.sdk.operations import OverlapOp
 
 pytestmark = pytest.mark.unit
 
@@ -379,6 +380,19 @@ def test_afd_moe_time_replaces_generic_f_and_comm(monkeypatch):
     assert metrics["t_f_layer"] == pytest.approx(3.0)
     assert metrics["t_a2f_layer"] == metrics["t_f2a_layer"] == 0.0
     assert metrics["t_step"] == pytest.approx(23.0)
+
+
+def test_afd_moe_time_extracts_router_from_overlap_wrapper():
+    router = SimpleNamespace(_name="generation_router_gemm")
+    routed = SimpleNamespace(_name="generation_moe")
+    shared = SimpleNamespace(_name="generation_shared_ffn")
+    overlap = OverlapOp("generation_moe_overlap", group_a=[router, routed], group_b=[shared])
+
+    assert AFDInferenceSession._router_ops([overlap]) == [router]
+    filtered = AFDInferenceSession._without_router_ops([overlap])
+    assert len(filtered) == 1
+    assert [op._name for op in filtered[0]._group_a] == ["generation_moe"]
+    assert [op._name for op in filtered[0]._group_b] == ["generation_shared_ffn"]
 
 
 def test_afd_nextn_expands_decode_compute_and_transfer_volume(monkeypatch):

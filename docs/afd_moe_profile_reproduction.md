@@ -1,0 +1,106 @@
+# AFD MoE profile reproduction
+
+This branch supports two explicit simulation modes:
+
+- Generic AIC: use the configured SGLang operation database for both AGG and AFD.
+- Measured MoE: replace only an exact matching MoE-stage point in both arms and retain AIC attention, router, memory, MTP progress, and uncovered layer work.
+
+Measured lookup never interpolates. The full key is model, system, stage,
+topology, logical batch per source rank, MTP `nextn`, microbatch count, MoE
+layer count, and precision. A B200 point therefore cannot calibrate a GB200
+simulation.
+
+## 1. Environment
+
+```bash
+git checkout pr1323-afd-moe-eval
+uv sync --extra dev
+git lfs pull
+```
+
+`git lfs pull` is required for HYBRID/default performance database queries.
+
+## 2. Validate a measured profile
+
+The measurement pipeline exports `aic.afd-moe-stage-profile.v1` JSON. Loading
+the file is a strict validation step:
+
+```bash
+uv run python -c \
+  'from aiconfigurator.sdk.afd_moe_profile import AFDMoEStageProfile; AFDMoEStageProfile.load("/path/to/afd_moe_stage_profile.json")'
+```
+
+AGG entries must have stable timing, a passing matched-output check, and
+same-point speedup greater than one. AFD entries must be stable and carry the
+paired validation evidence emitted by the measurement pipeline.
+
+## 3. Run the fixed-pool sweep
+
+Generic AIC only:
+
+```bash
+uv run python tools/afd_multimodel_mtp_experiment.py \
+  --output /path/to/generic_sweep.json \
+  --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
+  --workloads 8k 16k \
+  --total-gpus 16 24 36 48 72 \
+  --profile-scope primary
+```
+
+Use exact measured points and keep an explicitly labeled generic fallback when
+a key is absent:
+
+```bash
+uv run python tools/afd_multimodel_mtp_experiment.py \
+  --output /path/to/prefer_measured_sweep.json \
+  --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
+  --workloads 8k 16k \
+  --total-gpus 16 24 36 48 72 \
+  --profile-scope primary \
+  --afd-moe-profile /path/to/afd_moe_stage_profile.json
+```
+
+For an apples-to-apples measured-MoE comparison, drop every candidate without
+an exact point:
+
+```bash
+uv run python tools/afd_multimodel_mtp_experiment.py \
+  --output /path/to/measured_only_sweep.json \
+  --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
+  --workloads 8k 16k \
+  --total-gpus 16 24 36 48 72 \
+  --profile-scope primary \
+  --afd-moe-profile /path/to/afd_moe_stage_profile.json \
+  --require-measured-moe
+```
+
+Each row records `moe_measurement.used`, the exact lookup key, measured
+latency, generic residual, source commit/tree hash, and backend contract. The
+residual is limited to MTP auxiliary layer-equivalents and decoder layers not
+covered by the measured MoE boundary.
+
+## 4. Optional Dynamo Mocker replay
+
+Mocker does not predict kernel time. It replays selected AIC service points to
+check worker count, concurrency, scheduling, and the throughput/latency
+accounting used by the report.
+
+```bash
+uv run python tools/afd_multimodel_mtp_mocker_replay.py \
+  --sweep /path/to/measured_only_sweep.json \
+  --dynamo /path/to/dynamo \
+  --output-dir /path/to/mocker_replay \
+  --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
+  --workloads 8k 16k \
+  --total-gpus 16 24 36 48 72
+```
+
+## 5. Tests
+
+```bash
+uv run ruff check src/aiconfigurator/sdk/afd_moe_profile.py \
+  src/aiconfigurator/sdk/inference_session.py \
+  tools/afd_multimodel_mtp_experiment.py
+uv run pytest -m unit tests/unit/sdk/test_afd_moe_profile.py \
+  tests/unit/cli/test_afd_phase_completion.py
+```
