@@ -59,6 +59,13 @@ MODULE_ORDER = (
     "A-F transfer",
     "norm / embedding / logits",
 )
+BACKEND_COMPARE_FIELDS = (
+    "framework",
+    "moe_backend",
+    "moe_kernel",
+    "moe_precision",
+    "attention_backend",
+)
 
 CSS = """
 :root{--ink:#17202a;--muted:#5f6b76;--line:#d8dee4;--panel:#f7f9fb;--blue:#0072B2;--orange:#D55E00;--green:#007a55}
@@ -214,6 +221,50 @@ def moe_backend_label(model: dict[str, Any]) -> str:
     return f"SGLang {model['backend_version']}"
 
 
+def primary_arm_backend_contracts(
+    payload: dict[str, Any], model: dict[str, Any]
+) -> dict[str, dict[str, str]]:
+    """Return and validate the backend contract used by each primary arm."""
+    precision = primary_profile(model)["key"]
+    mtp = primary_mtp(model)["name"]
+    arms = (
+        ("AGG", "no_mtp", "agg"),
+        ("AGG + AFD", "no_mtp", "afd"),
+        ("AGG + MTP", mtp, "agg"),
+        ("AGG + AFD + MTP", mtp, "afd"),
+    )
+    result: dict[str, dict[str, str]] = {}
+    for label, scenario, system_kind in arms:
+        contracts = {
+            tuple((field, str(row["backend_contract"].get(field, ""))) for field in BACKEND_COMPARE_FIELDS)
+            for row in payload["rows"]
+            if row["model"] == model["key"]
+            and row["scenario"] == scenario
+            and row["precision_profile"] == precision
+            and row["system_kind"] == system_kind
+        }
+        if len(contracts) != 1:
+            raise ValueError(
+                f"expected exactly one backend contract for {model['key']}/{label}; got {len(contracts)}"
+            )
+        result[label] = dict(next(iter(contracts)))
+
+    baseline = result["AGG"]
+    for label, contract in result.items():
+        mismatch = [field for field in BACKEND_COMPARE_FIELDS if contract[field] != baseline[field]]
+        if mismatch:
+            raise ValueError(f"four-arm backend mismatch for {model['key']}/{label}: {', '.join(mismatch)}")
+    return result
+
+
+def compact_backend_contract(contract: dict[str, str]) -> str:
+    backend = "MegaMoE" if contract["moe_backend"] == "megamoe" else "default"
+    return (
+        f"{contract['framework']} · {backend} · {contract['moe_kernel']} · "
+        f"{contract['moe_precision']}"
+    )
+
+
 def select_best(
     payload: dict[str, Any],
     *,
@@ -303,10 +354,9 @@ def paired_winner(
     )
     ratio = None
     if agg is not None and afd is not None:
-        comparable = ("framework", "moe_backend", "moe_kernel", "moe_precision", "attention_backend")
         mismatch = [
             field
-            for field in comparable
+            for field in BACKEND_COMPARE_FIELDS
             if agg["backend_contract"].get(field) != afd["backend_contract"].get(field)
         ]
         if mismatch:
@@ -647,11 +697,13 @@ def model_navigation(payload: dict[str, Any], current: str | None = None) -> str
     return '<div class="nav">' + "".join(links) + "</div>"
 
 
-def contract_section(model: dict[str, Any], contract: dict[str, Any]) -> str:
+def contract_section(
+    model: dict[str, Any], contract: dict[str, Any], arm_contracts: dict[str, dict[str, str]]
+) -> str:
     profile = primary_profile(model)
     mtp = primary_mtp(model)
     exact = "same-shape data" if profile["exact_shape_data"] else "projected / transferred utilization"
-    return (
+    section = (
         "<h2>1. Compared contract</h2>"
         '<div class="callout"><strong>Matched-backend rule.</strong> AGG and AFD use the same framework, '
         "MoE kernel, MoE precision, model and fixed GPU budget. The ratio therefore measures the serving layout, "
@@ -687,12 +739,42 @@ def contract_section(model: dict[str, Any], contract: dict[str, Any]) -> str:
         "P=1+E[accepted drafts]. Effective TPOT=T<sub>round</sub>/P and throughput=concurrency×P/T<sub>round</sub>. "
         "Acceptance assumptions change only P; they do not erase the q-wide attention/MoE work.</p>"
     )
+    section += "<h3>Four-arm MoE backend identity</h3>"
+    section += table(
+        ["Arm", "Framework", "MoE backend", "MoE kernel", "MoE precision", "Identity check"],
+        [
+            [
+                esc(label),
+                esc(value["framework"]),
+                esc("MegaMoE" if value["moe_backend"] == "megamoe" else "default"),
+                esc(value["moe_kernel"]),
+                esc(value["moe_precision"]),
+                '<span class="good">matched</span>',
+            ]
+            for label, value in arm_contracts.items()
+        ],
+        css="wide",
+    )
+    if arm_contracts["AGG"]["moe_backend"] == "megamoe":
+        section += (
+            '<div class="callout ok"><strong>Requested MegaMoE control.</strong> AGG, AGG + MTP, '
+            "AGG + AFD, and AGG + AFD + MTP all query the same model-specific measured MegaMoE module. "
+            "The AFD ratios therefore do not contain a MoE-backend substitution.</div>"
+        )
+    else:
+        section += (
+            '<div class="callout"><strong>No unsupported MegaMoE substitution.</strong> This model has no '
+            "model-specific packaged MegaMoE contract in AIC. Both AGG arms and both AFD arms use the same "
+            "SGLang MoE kernel shown above; an AFD complete-F measurement is not reused as an AGG kernel time.</div>"
+        )
+    return section
 
 
 def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: float) -> tuple[str, dict[str, Any]]:
     winners = winners_for_model(payload, model, speed_floor)
     profile = primary_profile(model)
     mtp = primary_mtp(model)
+    arm_contracts = primary_arm_backend_contracts(payload, model)
     chart_contract = (
         f"Attention: {esc(model['attention_type'])}; {esc(model['attention_backend'])}. "
         f"MoE: {esc(model['moe_structure'])}; backend={esc(moe_backend_label(model))}; "
@@ -720,7 +802,7 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
         f'<div class="card"><div class="value">{value}</div><div class="label">{esc(label)} · AFD / AGG</div></div>'
         for label, value in cards
     ) + "</div>"
-    body += contract_section(model, payload["contract"])
+    body += contract_section(model, payload["contract"], arm_contracts)
 
     body += "<h2>2. End-to-end fixed-pool performance</h2>"
     throughput = {workload: throughput_series(winners, workload, mtp["name"]) for workload in CONTEXTS}
@@ -986,6 +1068,7 @@ def render_model(payload: dict[str, Any], model: dict[str, Any], speed_floor: fl
         "attention_backend": model["attention_backend"],
         "moe_backend": moe_backend_label(model),
         "moe_structure": model["moe_structure"],
+        "arm_backend_contracts": arm_contracts,
         "winners": summary_rows,
     }
     return document(title, f"GB200 · decode-only · ISL 8K/16K · OSL 1024 · speed floor {speed_floor:g} tok/s/user", body), summary
@@ -1032,6 +1115,22 @@ def render_index(payload: dict[str, Any], summaries: list[dict[str, Any]], speed
         '<div class="callout"><strong>Backend policy.</strong> MegaMoE is used for both AGG and AFD only for '
         "DeepSeek-V4-Pro, where AIC has a model-specific measured MegaMoE contract. All other primary comparisons "
         "use the same SGLang backend and kernel on both arms; no unsupported MegaMoE proxy is substituted.</div>"
+    )
+    body += "<h3>Four-arm backend equality audit</h3>"
+    body += table(
+        ["Model", "AGG", "AGG + AFD", "AGG + MTP", "AGG + AFD + MTP", "Result"],
+        [
+            [
+                f'<a href="{summary["model"]}.html">{esc(summary["label"])}</a>',
+                *[
+                    esc(compact_backend_contract(summary["arm_backend_contracts"][arm]))
+                    for arm in ("AGG", "AGG + AFD", "AGG + MTP", "AGG + AFD + MTP")
+                ],
+                '<span class="good">matched</span>',
+            ]
+            for summary in summaries
+        ],
+        css="wide",
     )
 
     body += "<h2>2. 72-GPU headline</h2>"
