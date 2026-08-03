@@ -742,7 +742,7 @@ def agg_point(
         "moe_tp": 1,
         "moe_ep": world,
         "local_batch": local_batch,
-        "moe_source_batch_per_rank": local_batch / tp,
+        "moe_source_batch_per_rank": source_batch_per_rank,
         "global_batch_per_replica": global_batch,
         "raw_round_ms": raw_round_ms,
         "effective_tpot_ms": raw_round_ms / scenario.progress,
