@@ -114,7 +114,21 @@ latency, generic residual, source commit/tree hash, and backend contract. The
 residual is limited to MTP auxiliary layer-equivalents and decoder layers not
 covered by the measured MoE boundary.
 
-## 4. Optional Dynamo Mocker replay
+## 4. Render the self-contained HTML report
+
+```bash
+uv run python tools/render_afd_multimodel_mtp_report.py \
+  --sweep /path/to/measured_only_sweep.json \
+  --output-dir /path/to/measured_report \
+  --speed-floor 30
+```
+
+Open `/path/to/measured_report/index.html`. Every chart is inline SVG, so the
+report directory has no external image dependency. Model pages list the exact
+measured MoE-stage key, latency, residual AIC work, validation speedup bound,
+and source commit used by each selected point.
+
+## 5. Optional Dynamo Mocker replay
 
 Mocker does not predict kernel time. It replays selected AIC service points to
 check worker count, concurrency, scheduling, and the throughput/latency
@@ -149,7 +163,7 @@ Compare `mean_tpot_ms` with `expected_steady_state_tpot_ms` first. The JSON
 field `finite_wave_efficiency_vs_aic_steady_state` separately shows how much
 fill/drain remains in the finite replay.
 
-## 5. Tests
+## 6. Tests
 
 ```bash
 uv run ruff check src/aiconfigurator/sdk/afd_moe_profile.py \
