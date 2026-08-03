@@ -30,6 +30,13 @@ The collection commands and qualification gates are in FastAFD
 `scripts/experiments/afd/README_megamoe_multimodel.md` on branch
 `megamoe-multimodel-b200`.
 
+That branch publishes its selected B200 data at
+`scripts/experiments/afd/reference/b200_sxm/afd_moe_stage_profile.json` and the
+human-readable table beside it. The file can be loaded to audit the schema and
+provenance, but this GB200 sweep rejects it by design. Re-run the same FastAFD
+matrix on GB200 with `MEASUREMENT_SYSTEM=gb200` to produce a target-system
+profile.
+
 For AGG, the measured source-rank batch is
 `agg_local_batch / attention_tp`, because `agg_local_batch` is per attention-DP
 replica and the MoE EP stage consumes the tokens distributed across its source
