@@ -1118,6 +1118,14 @@ def selected_profiles(spec: ModelSpec, profile_scope: str) -> tuple[PrecisionPro
     return tuple(profile for profile in spec.precision_profiles if profile.primary)
 
 
+def afd_service_unit_grid(fixed_pool_sizes: tuple[int, ...]) -> tuple[int, ...]:
+    """Return every node-aligned AFD unit that can fit a selected fixed pool."""
+
+    if not fixed_pool_sizes:
+        return ()
+    return tuple(range(2 * GPUS_PER_NODE, max(fixed_pool_sizes) + 1, GPUS_PER_NODE))
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     selected_models = [MODEL_BY_KEY[key] for key in args.models]
     selected_workloads = list(args.workloads)
@@ -1130,35 +1138,52 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
 
     groups = [
-        (spec, workload, scenario, precision, total_gpus)
+        (spec, workload, scenario, precision, fixed_pool_sizes)
         for spec in selected_models
         for workload in selected_workloads
         for scenario in spec.scenarios
         for precision in selected_profiles(spec, args.profile_scope)
-        for total_gpus in selected_totals
-        if total_gpus in precision.total_gpu_grid and total_gpus in scenario.total_gpu_grid
+        if (
+            fixed_pool_sizes := tuple(
+                total_gpus
+                for total_gpus in selected_totals
+                if total_gpus in precision.total_gpu_grid and total_gpus in scenario.total_gpu_grid
+            )
+        )
     ]
-    for index, (spec, workload, scenario, precision, total_gpus) in enumerate(groups, start=1):
+    for index, (spec, workload, scenario, precision, fixed_pool_sizes) in enumerate(groups, start=1):
         print(
-            f"[{index}/{len(groups)}] {spec.key} {workload} {scenario.name} {precision.key} {total_gpus} GPU",
+            f"[{index}/{len(groups)}] {spec.key} {workload} {scenario.name} {precision.key} "
+            f"fixed pools={fixed_pool_sizes}",
             flush=True,
         )
-        new_agg, agg_failures = agg_cluster_rows(
-            spec,
-            workload,
-            scenario,
-            precision,
-            total_gpus,
-            measured_profile_path,
-        )
-        new_afd, afd_failures = afd_cluster_rows(
-            spec,
-            workload,
-            scenario,
-            precision,
-            total_gpus,
-            measured_profile_path,
-        )
+        new_agg: list[dict[str, Any]] = []
+        agg_failures: list[dict[str, Any]] = []
+        for fixed_pool_size in fixed_pool_sizes:
+            rows, row_failures = agg_cluster_rows(
+                spec,
+                workload,
+                scenario,
+                precision,
+                fixed_pool_size,
+                measured_profile_path,
+            )
+            new_agg.extend(rows)
+            agg_failures.extend(row_failures)
+
+        new_afd: list[dict[str, Any]] = []
+        afd_failures: list[dict[str, Any]] = []
+        for unit_gpus in afd_service_unit_grid(fixed_pool_sizes):
+            rows, row_failures = afd_cluster_rows(
+                spec,
+                workload,
+                scenario,
+                precision,
+                unit_gpus,
+                measured_profile_path,
+            )
+            new_afd.extend(rows)
+            afd_failures.extend(row_failures)
         if args.require_measured_moe:
             new_agg = [row for row in new_agg if row["moe_measurement"]["used"]]
             new_afd = [row for row in new_afd if row["moe_measurement"]["used"]]
@@ -1199,6 +1224,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "microbatch_grid": list(MICROBATCHES),
             "f_node_rule": "all integer node splits: 1 <= F nodes < total nodes",
             "afd_row_scope": "one AFD service unit; fixed-pool analysis may pack identical units and charges idle GPUs",
+            "afd_service_unit_gpu_grid": list(afd_service_unit_grid(selected_totals)),
             "agg_world_rule": "all 4-GPU increments; idle remainder is counted in the fixed total-GPU denominator",
             "static_tp_grid": list(STATIC_TPS),
             "speed_floors_tokps_per_user": list(SPEED_FLOORS),

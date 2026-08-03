@@ -102,6 +102,13 @@ uv run python tools/afd_multimodel_mtp_experiment.py \
   --require-measured-moe
 ```
 
+The values passed to `--total-gpus` are fixed comparison-pool sizes. For AFD,
+the sweep independently evaluates every node-aligned service-unit size from 8
+GPUs through the largest selected pool, then the report packs identical units
+into each fixed pool and charges any idle remainder. This is why an exact
+`4A4F` measurement can participate in a 16/24/36/48/72-GPU comparison. AGG is
+optimized directly at each fixed pool size, including all valid worker sizes.
+
 Each row records `moe_measurement.used`, the exact lookup key, measured
 latency, generic residual, source commit/tree hash, and backend contract. The
 residual is limited to MTP auxiliary layer-equivalents and decoder layers not
