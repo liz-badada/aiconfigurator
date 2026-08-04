@@ -51,6 +51,42 @@ def test_measured_only_rejects_a_profile_for_another_system(experiment_module):
         experiment_module.require_profile_system(profile, "gb200")
 
 
+def test_every_model_has_explicit_matched_backend_profiles(experiment_module):
+    for model in experiment_module.MODELS:
+        by_family = {
+            family: experiment_module.selected_profiles(model, "all", {family})
+            for family in ("megamoe", "deepep_deepgemm", "trtllm")
+        }
+
+        assert all(len(profiles) == 1 for profiles in by_family.values())
+        assert by_family["megamoe"][0].primary
+        assert by_family["megamoe"][0].measured_moe_backend == "megamoe"
+        assert by_family["deepep_deepgemm"][0].measured_moe_backend == "deepep_deepgemm"
+        assert by_family["trtllm"][0].measured_moe_backend is None
+
+
+def test_primary_scope_does_not_silently_select_a_control_backend(experiment_module):
+    model = experiment_module.MODEL_BY_KEY["qwen3_235b"]
+
+    assert experiment_module.selected_profiles(model, "primary", {"trtllm"}) == ()
+    selected = experiment_module.selected_profiles(model, "primary", {"megamoe"})
+    assert tuple(profile.backend_family for profile in selected) == ("megamoe",)
+
+
+@pytest.mark.parametrize("backend_family", ["megamoe", "deepep_deepgemm"])
+def test_missing_measurement_is_labeled_as_generic_control(experiment_module, backend_family):
+    spec = experiment_module.MODEL_BY_KEY["qwen3_235b"]
+    requested = experiment_module.selected_profiles(spec, "all", {backend_family})[0]
+
+    contract = experiment_module.moe_backend_contract(spec, requested, None)
+
+    assert contract == {
+        "moe_backend": "generic-trtllm",
+        "moe_time_source": "aic-database",
+        "moe_kernel": "sglang_mxfp4_flashinfer_trtllm_moe",
+    }
+
+
 def test_run_sweeps_fixed_agg_pools_and_all_fitting_afd_units(experiment_module, monkeypatch, tmp_path):
     agg_sizes = []
     afd_sizes = []
@@ -179,7 +215,7 @@ def test_renderer_summarizes_mocker_accounting_without_case_artifacts(renderer_m
     assert summary["mtp_finite_efficiency"] == [0.91, 0.91]
 
 
-def test_renderer_line_charts_use_nvidia_palette_and_label_every_point(renderer_module):
+def test_renderer_line_charts_use_nvidia_palette_without_point_labels(renderer_module):
     svg = renderer_module.line_svg(
         {"AGG": [(16, 1.0), (24, 1.1)], "AGG + AFD": [(16, 1.2), (24, 1.3)]},
         x_label="GPU count",
@@ -189,18 +225,71 @@ def test_renderer_line_charts_use_nvidia_palette_and_label_every_point(renderer_
     )
 
     assert renderer_module.COLORS["AGG + AFD"] == "#76B900"
-    assert svg.count('class="value-label"') == 4
-    assert ">1.20</text>" in svg
-    assert ">1.30</text>" in svg
+    assert svg.count("<circle ") == 4
+    assert 'class="value-label"' not in svg
 
 
-def test_renderer_pareto_charts_label_every_point(renderer_module):
+def test_renderer_pareto_charts_do_not_label_points(renderer_module):
     svg = renderer_module.scatter_svg(
         {"AGG": [(10.0, 120.0)], "AGG + AFD": [(8.0, 150.0)]},
         x_max=50.0,
         y_max=200.0,
     )
 
+    assert svg.count("<circle ") == 2
+    assert 'class="value-label"' not in svg
+
+
+def test_renderer_chart_data_table_lists_series_and_axis_semantics(renderer_module):
+    data = renderer_module.chart_data_table(
+        {"AGG": [(16.0, 1.234567890123)], "AGG + AFD": [(24.0, 2.5)]},
+        x_label="Fixed GPU pool size (GPUs)",
+        y_label="Output throughput (tokens/s/GPU)",
+    )
+
+    assert "<th>Series</th>" in data
+    assert "<th>X — Fixed GPU pool size (GPUs)</th>" in data
+    assert "<th>Y — Output throughput (tokens/s/GPU)</th>" in data
+    assert "<td>AGG</td><td>16</td><td>1.23456789012</td>" in data
+    assert "<td>AGG + AFD</td><td>24</td><td>2.5</td>" in data
+
+
+def test_renderer_grouped_bar_charts_label_every_bar(renderer_module):
+    svg = renderer_module.grouped_bar_svg(
+        ["8K"],
+        {"A path": [12.5], "F path": [15.0]},
+        x_label="Case",
+        y_label="Time (µs)",
+        y_max=20.0,
+    )
+
     assert svg.count('class="value-label"') == 2
-    assert ">120</text>" in svg
-    assert ">150</text>" in svg
+    assert ">12.5</text>" in svg
+    assert ">15.0</text>" in svg
+
+
+def test_renderer_stacked_bar_charts_label_every_total(renderer_module):
+    svg = renderer_module.stacked_bar_svg(
+        ["8K", "16K"],
+        [
+            {"attention": 1.25, "MoE / shared expert": 2.75},
+            {"attention": 2.0, "MoE / shared expert": 3.0},
+        ],
+        y_max=6.0,
+    )
+
+    assert svg.count('class="value-label"') == 2
+    assert ">4.00</text>" in svg
+    assert ">5.00</text>" in svg
+
+
+def test_renderer_places_series_table_below_chart(renderer_module):
+    data = renderer_module.chart_data_table(
+        {"AGG": [(16.0, 1.25)]},
+        x_label="GPUs",
+        y_label="Ratio (AFD / AGG)",
+    )
+
+    rendered = renderer_module.figure("<svg></svg>", "Read me", data_table=data)
+
+    assert rendered.index("</svg>") < rendered.index("<table>") < rendered.index("How to read")

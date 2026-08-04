@@ -20,6 +20,7 @@ def _entry(**overrides):
         "microbatches": 1,
         "moe_layers": 60,
         "moe_precision": "fp4",
+        "moe_backend": "megamoe",
         "latency_ms": 4.25,
         "validation": {
             "stable": True,
@@ -43,7 +44,7 @@ def _write(tmp_path, entries):
     path.write_text(
         json.dumps(
             {
-                "schema": "aic.afd-moe-stage-profile.v1",
+                "schema": "aic.afd-moe-stage-profile.v2",
                 "lookup_policy": "exact-only",
                 "entries": entries,
             }
@@ -64,6 +65,7 @@ def _key(**overrides):
         "microbatches": 1,
         "moe_layers": 60,
         "moe_precision": "fp4",
+        "moe_backend": "megamoe",
     }
     values.update(overrides)
     return AFDMoEStageKey(**values)
@@ -76,6 +78,43 @@ def test_profile_uses_exact_full_key(tmp_path):
     assert profile.find(_key(system="b200_sxm")) is None
     assert profile.find(_key(logical_batch_per_source_rank=48)) is None
     assert profile.find(_key(mtp_nextn=1)) is None
+    assert profile.find(_key(moe_backend="deepep_deepgemm")) is None
+
+
+def test_legacy_profile_is_read_as_megamoe(tmp_path):
+    path = _write(tmp_path, [_entry()])
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema"] = "aic.afd-moe-stage-profile.v1"
+    payload["entries"][0].pop("moe_backend")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    profile = AFDMoEStageProfile.load(path)
+
+    assert profile.require(_key()).key.moe_backend == "megamoe"
+
+
+def test_v2_profile_requires_an_explicit_backend(tmp_path):
+    entry = _entry()
+    entry.pop("moe_backend")
+
+    with pytest.raises(ValueError, match="moe_backend"):
+        AFDMoEStageProfile.load(_write(tmp_path, [entry]))
+
+
+def test_profile_keeps_valid_measurement_when_backend_speedup_is_below_one(tmp_path):
+    entry = _entry(
+        validation={
+            "stable": True,
+            "correctness": True,
+            "matched_speedup": 0.9,
+            "matched_speedup_lower_bound": 0.8,
+            "evidence": "same-point-colocated",
+        }
+    )
+
+    profile = AFDMoEStageProfile.load(_write(tmp_path, [entry]))
+
+    assert profile.require(_key()).matched_speedup == pytest.approx(0.9)
 
 
 def test_profile_accepts_stable_afd_entry_without_colocated_fields(tmp_path):
@@ -129,7 +168,7 @@ def test_profile_accepts_stable_afd_entry_without_colocated_fields(tmp_path):
                 validation={
                     "stable": True,
                     "correctness": True,
-                    "matched_speedup": 0.9,
+                    "matched_speedup": 0.0,
                     "matched_speedup_lower_bound": 1.25,
                     "evidence": "same-point-colocated",
                 }
@@ -142,7 +181,7 @@ def test_profile_accepts_stable_afd_entry_without_colocated_fields(tmp_path):
                     "stable": True,
                     "correctness": True,
                     "matched_speedup": 1.4,
-                    "matched_speedup_lower_bound": 0.95,
+                    "matched_speedup_lower_bound": 0.0,
                     "evidence": "same-point-colocated",
                 }
             ),

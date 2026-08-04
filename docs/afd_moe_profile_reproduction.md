@@ -7,18 +7,17 @@ This branch supports two explicit simulation modes:
 
 Measured lookup never interpolates. The full key is model, system, stage,
 topology, logical batch per source rank, MTP `nextn`, microbatch count, MoE
-layer count, and precision. A B200 point therefore cannot calibrate a GB200
-simulation.
+layer count, precision, and backend. A B200 point therefore cannot calibrate a
+GB200 simulation, and a MegaMoE point cannot calibrate a DeepEP+DeepGEMM arm.
 
 ## Where the measured values live
 
 `afd_moe_time_ms` is a single-run SDK/CLI override; it is not the calibration
 database. The reproducible path is:
 
-1. FastAFD writes one raw JSON result per exact workload through
-   `scripts/experiments/afd/run_megamoe_{colocated,m2n}_model_benchmark.sh`.
-2. `scripts/experiments/afd/summarize_megamoe_model_results.py` validates those
-   JSON files and exports `afd_moe_stage_profile.json`.
+1. A kernel measurement producer writes one raw JSON result per exact workload.
+2. Its qualification step validates those results and exports
+   `afd_moe_stage_profile.json`.
 3. This AIC branch loads that profile with `--afd-moe-profile` and records the
    exact matched entry in every retained AGG or AFD row.
 
@@ -26,16 +25,9 @@ The current colocated MegaMoE path exports
 `moe_precision=w4a8_mxfp4_mxfp8` (E2M1 plus UE8M0 block-32 weights and E4M3
 activations). It must not be used to calibrate an `nvfp4` candidate.
 
-The collection commands and qualification gates are in FastAFD
-`scripts/experiments/afd/README_megamoe_multimodel.md` on branch
-`megamoe-multimodel-b200`.
-
-That branch publishes its selected B200 data at
-`scripts/experiments/afd/reference/b200_sxm/afd_moe_stage_profile.json` and the
-human-readable table beside it. The file can be loaded to audit the schema and
-provenance, but this GB200 sweep rejects it by design. Re-run the same FastAFD
-matrix on GB200 with `MEASUREMENT_SYSTEM=gb200` to produce a target-system
-profile.
+The measured profile can be loaded to audit its schema and provenance. A GB200
+sweep rejects a B200 profile by design; the same matrix must be measured on
+GB200 with `system=gb200` to produce a target-system profile.
 
 For AGG, the measured source-rank batch is
 `agg_local_batch / attention_tp`, because `agg_local_batch` is per attention-DP
@@ -55,23 +47,24 @@ git lfs pull
 
 ## 2. Validate a measured profile
 
-The measurement pipeline exports `aic.afd-moe-stage-profile.v1` JSON. Loading
-the file is a strict validation step:
+The measurement pipeline exports `aic.afd-moe-stage-profile.v2` JSON. Version 2
+requires `moe_backend` in every exact key. Version 1 remains readable and is
+interpreted as legacy MegaMoE-only data. Loading the file is a strict
+validation step:
 
 ```bash
 uv run python -c \
   'from aiconfigurator.sdk.afd_moe_profile import AFDMoEStageProfile; AFDMoEStageProfile.load("/path/to/afd_moe_stage_profile.json")'
 ```
 
-AGG entries must have stable MegaMoE timing, a passing matched-output check,
-median same-point speedup greater than one, and a conservative
-`min(DeepEP samples) / max(MegaMoE samples)` speedup lower bound greater than
-one. AFD entries must be stable and carry the paired validation evidence
-emitted by the measurement pipeline.
+AGG entries must have stable timing and a passing matched-output check. Measured
+speedup fields are evidence, not an admission filter: a valid slower backend is
+kept so backend comparisons are not biased. AFD entries must be stable and
+carry the paired validation evidence emitted by the measurement pipeline.
 
 ## 3. Run the fixed-pool sweep
 
-Generic AIC only:
+Generic AIC SGLang/FlashInfer/TensorRT-LLM MoE control:
 
 ```bash
 uv run python tools/afd_multimodel_mtp_experiment.py \
@@ -79,10 +72,11 @@ uv run python tools/afd_multimodel_mtp_experiment.py \
   --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
   --workloads 8k 16k \
   --total-gpus 16 24 36 48 72 \
-  --profile-scope primary
+  --profile-scope all \
+  --moe-backends trtllm
 ```
 
-Use exact measured points and keep an explicitly labeled generic fallback when
+Use exact MegaMoE points and keep an explicitly labeled generic fallback when
 a key is absent:
 
 ```bash
@@ -91,7 +85,8 @@ uv run python tools/afd_multimodel_mtp_experiment.py \
   --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
   --workloads 8k 16k \
   --total-gpus 16 24 36 48 72 \
-  --profile-scope primary \
+  --profile-scope all \
+  --moe-backends megamoe \
   --afd-moe-profile /path/to/afd_moe_stage_profile.json
 ```
 
@@ -104,10 +99,18 @@ uv run python tools/afd_multimodel_mtp_experiment.py \
   --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
   --workloads 8k 16k \
   --total-gpus 16 24 36 48 72 \
-  --profile-scope primary \
+  --profile-scope all \
+  --moe-backends megamoe \
   --afd-moe-profile /path/to/afd_moe_stage_profile.json \
   --require-measured-moe
 ```
+
+Run the same measured-only command with
+`--moe-backends deepep_deepgemm` for DeepEP+DeepGEMM. The committed B200
+profile currently contains colocated AGG points for that backend but no split
+AFD points, so it cannot yet produce a paired DeepEP AFD comparison. The
+measured-only policy drops those missing arms instead of substituting another
+backend.
 
 The values passed to `--total-gpus` are fixed comparison-pool sizes. For AFD,
 the sweep independently evaluates every node-aligned service-unit size from 8
@@ -127,7 +130,7 @@ covered by the measured MoE boundary.
 uv run python tools/render_afd_multimodel_mtp_report.py \
   --sweep /path/to/measured_only_sweep.json \
   --moe-reference-profile /path/to/afd_moe_stage_profile.json \
-  --moe-reference-url https://github.com/liz-badada/FastAFD/tree/megamoe-multimodel-b200/scripts/experiments/afd/reference/b200_sxm \
+  --moe-reference-url https://example.invalid/measured-profile-provenance \
   --output-dir /path/to/measured_report \
   --speed-floor 30
 ```

@@ -66,6 +66,8 @@ BACKEND_COMPARE_FIELDS = (
     "moe_precision",
     "attention_backend",
 )
+PARETO_X_LABEL = "Effective TPOT (ms / committed token)"
+PARETO_Y_LABEL = "Output throughput (tokens/s/GPU)"
 
 CSS = """
 :root{--ink:#1A1A1A;--muted:#606060;--line:#D8D8D8;--panel:#F4F4F4;--blue:#76B900;--orange:#4D4D4D;--green:#76B900}
@@ -111,9 +113,37 @@ def table(headers: list[str], rows: Iterable[list[object]], *, css: str = "") ->
     )
 
 
-def figure(svg: str, comment: str, contract_note: str | None = None) -> str:
+def figure(
+    svg: str,
+    comment: str,
+    contract_note: str | None = None,
+    data_table: str = "",
+) -> str:
     contract = f'<p class="small muted"><strong>Backend contract:</strong> {contract_note}</p>' if contract_note else ""
-    return f'<div class="figure">{svg}{contract}<p class="comment"><strong>How to read:</strong> {comment}</p></div>'
+    return (
+        f'<div class="figure">{svg}{data_table}{contract}'
+        f'<p class="comment"><strong>How to read:</strong> {comment}</p></div>'
+    )
+
+
+def chart_data_value(value: float) -> str:
+    if not math.isfinite(value):
+        return "—"
+    return f"{value:.12g}"
+
+
+def chart_data_table(
+    series: dict[str, list[tuple[float, float]]],
+    *,
+    x_label: str,
+    y_label: str,
+) -> str:
+    rows = [
+        [esc(label), chart_data_value(x), chart_data_value(y)]
+        for label, points in series.items()
+        for x, y in sorted(points)
+    ]
+    return table(["Series", f"X — {x_label}", f"Y — {y_label}"], rows)
 
 
 def document(title: str, subtitle: str, body: str) -> str:
@@ -206,7 +236,10 @@ def load_moe_reference(path: Path | None, url: str | None = None) -> dict[str, A
         return None
     resolved = path.resolve()
     payload = json.loads(resolved.read_text(encoding="utf-8"))
-    if payload.get("schema") != "aic.afd-moe-stage-profile.v1":
+    if payload.get("schema") not in {
+        "aic.afd-moe-stage-profile.v1",
+        "aic.afd-moe-stage-profile.v2",
+    }:
         raise ValueError(f"unsupported MoE reference schema in {resolved}: {payload.get('schema')}")
     entries = payload.get("entries", [])
     if not entries:
@@ -222,9 +255,17 @@ def load_moe_reference(path: Path | None, url: str | None = None) -> dict[str, A
 
     models = {}
     for model_path, model_entries in grouped.items():
-        agg = [entry for entry in model_entries if entry["stage"] == "agg"]
-        afd = [entry for entry in model_entries if entry["stage"] == "afd"]
-        validation_rows = [entry for entry in agg if entry.get("validation")]
+
+        def backend(entry: dict[str, Any]) -> str:
+            return str(entry.get("moe_backend", "megamoe"))
+
+        mega = [entry for entry in model_entries if backend(entry) == "megamoe"]
+        deep = [entry for entry in model_entries if backend(entry) == "deepep_deepgemm"]
+        agg = [entry for entry in mega if entry["stage"] == "agg"]
+        afd = [entry for entry in mega if entry["stage"] == "afd"]
+        deep_agg = [entry for entry in deep if entry["stage"] == "agg"]
+        deep_afd = [entry for entry in deep if entry["stage"] == "afd"]
+        validation_rows = [entry for entry in agg if entry.get("validation", {}).get("matched_speedup") is not None]
         models[model_path] = {
             "entries": len(model_entries),
             "agg_entries": len(agg),
@@ -235,8 +276,11 @@ def load_moe_reference(path: Path | None, url: str | None = None) -> dict[str, A
             "mtp_nextn": sorted({int(entry["mtp_nextn"]) for entry in model_entries}),
             "microbatches": sorted({int(entry["microbatches"]) for entry in afd}),
             "precisions": sorted({str(entry["moe_precision"]) for entry in model_entries}),
+            "backends": sorted({backend(entry) for entry in model_entries}),
             "agg_latency_ms": value_range(agg, lambda entry: entry["latency_ms"]),
             "afd_latency_ms": value_range(afd, lambda entry: entry["latency_ms"]),
+            "deepep_agg_latency_ms": value_range(deep_agg, lambda entry: entry["latency_ms"]),
+            "deepep_afd_latency_ms": value_range(deep_afd, lambda entry: entry["latency_ms"]),
             "matched_speedup": value_range(validation_rows, lambda entry: entry["validation"]["matched_speedup"]),
             "matched_speedup_lower_bound": value_range(
                 validation_rows,
@@ -577,7 +621,6 @@ def line_svg(
     if reference_y is not None and y_min <= reference_y <= y_max:
         y = y_pos(reference_y)
         parts.append(f'<line class="ref" x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}"/>')
-    label_offsets = (-10, 15, -24, 29, -38, 43)
     for series_index, (label, points) in enumerate(series.items()):
         color = COLORS.get(label, "#666")
         ordered = sorted(points)
@@ -588,15 +631,8 @@ def line_svg(
         parts.append(f'<polyline points="{coords}" fill="none" stroke="{color}" stroke-width="2.7"{dash}/>')
         for x, y in ordered:
             px, py = x_pos(x), y_pos(y)
-            label_y = min(max(py + label_offsets[series_index % len(label_offsets)], top + 10), top + plot_h - 5)
-            anchor = "start" if px < left + 28 else "end" if px > width - right - 28 else "middle"
-            label_x = px + 6 if anchor == "start" else px - 6 if anchor == "end" else px
             parts.append(
                 f'<circle cx="{px:.1f}" cy="{py:.1f}" r="4.2" fill="{color}" stroke="#fff" stroke-width="1.4"/>'
-            )
-            parts.append(
-                f'<text class="value-label" style="fill:{color}" x="{label_x:.1f}" y="{label_y:.1f}" '
-                f'text-anchor="{anchor}">{plot_value(y, y_max - y_min)}</text>'
             )
     legend_x = left
     for label in series:
@@ -644,8 +680,11 @@ def grouped_bar_svg(
             bar_h = max(value, 0) / y_max * plot_h
             x = start + series_index * bar_w
             y = top + plot_h - bar_h
+            color = COLORS.get(label, "#666")
+            parts.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w - 2:.1f}" height="{bar_h:.1f}" fill="{color}"/>')
             parts.append(
-                f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w - 2:.1f}" height="{bar_h:.1f}" fill="{COLORS.get(label, "#666")}"/>'
+                f'<text class="value-label" style="fill:{color}" x="{x + (bar_w - 2) / 2:.1f}" '
+                f'y="{max(y - 6, top + 10):.1f}" text-anchor="middle">{plot_value(value, y_max)}</text>'
             )
         parts.append(
             f'<text class="tick" x="{center:.1f}" y="{top + plot_h + 22}" text-anchor="middle">{esc(category)}</text>'
@@ -693,6 +732,11 @@ def stacked_bar_svg(
             parts.append(
                 f'<rect x="{x:.1f}" y="{cursor:.1f}" width="{bar_w:.1f}" height="{bar_h:.1f}" fill="{COLORS[group]}"/>'
             )
+        total = sum(totals.get(group, 0.0) for group in MODULE_ORDER)
+        parts.append(
+            f'<text class="value-label" x="{x + bar_w / 2:.1f}" y="{max(cursor - 6, top + 10):.1f}" '
+            f'text-anchor="middle">{plot_value(total, y_max)}</text>'
+        )
         parts.append(
             f'<text class="tick" x="{x + bar_w / 2:.1f}" y="{top + plot_h + 22}" text-anchor="middle">{esc(category)}</text>'
         )
@@ -744,7 +788,6 @@ def scatter_svg(
             f'<text class="tick" x="{x:.1f}" y="{top + plot_h + 22}" text-anchor="middle">{x_value:.0f}</text>'
         )
         parts.append(f'<text class="tick" x="{left - 10}" y="{y + 4:.1f}" text-anchor="end">{y_value:.0f}</text>')
-    label_offsets = (-9, 14, -22, 27, -35, 40)
     for series_index, (label, points) in enumerate(series.items()):
         color = COLORS[label]
         ordered = sorted(points)
@@ -753,18 +796,10 @@ def scatter_svg(
             series_index % 4
         ]
         parts.append(f'<polyline points="{coords}" fill="none" stroke="{color}" stroke-width="2.6"{dash}/>')
-        for point_index, (x, y) in enumerate(ordered):
+        for x, y in ordered:
             px, py = x_pos(x), y_pos(y)
-            offset = label_offsets[series_index % len(label_offsets)] + (4 if point_index % 2 else 0)
-            label_y = min(max(py + offset, top + 10), top + plot_h - 5)
-            anchor = "start" if px < left + 35 else "end" if px > width - right - 35 else "middle"
-            label_x = px + 5 if anchor == "start" else px - 5 if anchor == "end" else px
             parts.append(
                 f'<circle cx="{px:.1f}" cy="{py:.1f}" r="3.9" fill="{color}" stroke="#fff" stroke-width="1.3"/>'
-            )
-            parts.append(
-                f'<text class="value-label" style="fill:{color}" x="{label_x:.1f}" y="{label_y:.1f}" '
-                f'text-anchor="{anchor}">{plot_value(y, y_max)}</text>'
             )
     parts.append(f'<line class="axis" x1="{left}" x2="{width - right}" y1="{top + plot_h}" y2="{top + plot_h}"/>')
     parts.append(f'<line class="axis" x1="{left}" x2="{left}" y1="{top}" y2="{top + plot_h}"/>')
@@ -773,11 +808,9 @@ def scatter_svg(
         parts.append(f'<rect x="{legend_x}" y="12" width="12" height="5" fill="{COLORS[label]}"/>')
         parts.append(f'<text class="legend" x="{legend_x + 17}" y="18">{esc(label)}</text>')
         legend_x += 30 + len(label) * 7
+    parts.append(f'<text x="{left + plot_w / 2:.1f}" y="{height - 12}" text-anchor="middle">{PARETO_X_LABEL}</text>')
     parts.append(
-        f'<text x="{left + plot_w / 2:.1f}" y="{height - 12}" text-anchor="middle">Effective TPOT (ms / committed token)</text>'
-    )
-    parts.append(
-        f'<text transform="translate(18 {top + plot_h / 2:.1f}) rotate(-90)" text-anchor="middle">Output throughput (tokens/s/GPU)</text>'
+        f'<text transform="translate(18 {top + plot_h / 2:.1f}) rotate(-90)" text-anchor="middle">{PARETO_Y_LABEL}</text>'
     )
     parts.append("</svg>")
     return "".join(parts)
@@ -936,6 +969,7 @@ def contract_section(
                 '<div class="callout warn"><strong>Separate silicon MoE evidence.</strong> '
                 f"{model_reference['entries']} qualified {esc(reference_system)} exact-stage points exist for this model: "
                 f"AGG latency {fmt_range(model_reference['agg_latency_ms'], suffix=' ms')}; "
+                f"AGG DeepEP+DeepGEMM latency {fmt_range(model_reference['deepep_agg_latency_ms'], suffix=' ms')}; "
                 f"AFD F-stage latency {fmt_range(model_reference['afd_latency_ms'], suffix=' ms')}; "
                 f"colocated DeepEP/MegaMoE conservative lower bound "
                 f"{fmt_range(model_reference['matched_speedup_lower_bound'], suffix='×')}. "
@@ -1005,6 +1039,11 @@ def render_model(
             "Each curve is independently optimized at the same user-speed floor. The y-axis is per total allocated GPU, "
             "so idle GPUs in either AGG or AFD unit packing remain in the denominator. Both context panels use the same y scale.",
             chart_contract,
+            data_table=chart_data_table(
+                throughput[workload],
+                x_label="Fixed GPU pool size (GPUs)",
+                y_label="Output throughput (tokens/s/GPU)",
+            ),
         )
         ratios = ratio_series(winners, workload)
         ratio_max = nice_max(max(value for points in ratios.values() for _, value in points) * 1.05)
@@ -1019,6 +1058,11 @@ def render_model(
             "The dashed 1.0 line is break-even. Above it, the best matched-backend AFD layout beats the best AGG layout; "
             "below it, partitioning and transfer overhead outweigh A/F overlap at that pool size.",
             chart_contract,
+            data_table=chart_data_table(
+                ratios,
+                x_label="Fixed GPU pool size (GPUs)",
+                y_label="Throughput ratio: AFD / AGG",
+            ),
         )
 
     body += "<h2>3. A:F ratio, stage balance, and end-to-end formula</h2>"
@@ -1223,6 +1267,11 @@ def render_model(
             "Left is lower effective TPOT; up is higher tokens/s/GPU. Only non-dominated points with TPOT≤50 ms are shown. "
             "The 8K and 16K charts use identical x and y intervals, so visual distances are directly comparable.",
             chart_contract,
+            data_table=chart_data_table(
+                pareto_by_context[workload],
+                x_label=PARETO_X_LABEL,
+                y_label=PARETO_Y_LABEL,
+            ),
         )
 
     body += "<h2>6. Precision and kernel controls at 72 GPUs</h2>"
@@ -1386,7 +1435,7 @@ def render_index(
             reference = moe_reference["models"].get(model_path)
             if reference is None:
                 reference_rows.append(
-                    [f'<a href="{summary["model"]}.html">{esc(summary["label"])}</a>', "—", "—", "—", "—", "—"]
+                    [f'<a href="{summary["model"]}.html">{esc(summary["label"])}</a>', "—", "—", "—", "—", "—", "—"]
                 )
                 continue
             topology = ", ".join(reference["afd_topologies"])
@@ -1401,6 +1450,7 @@ def render_index(
                     esc(topology),
                     esc(grid),
                     fmt_range(reference["agg_latency_ms"], suffix=" ms"),
+                    fmt_range(reference["deepep_agg_latency_ms"], suffix=" ms"),
                     fmt_range(reference["afd_latency_ms"], suffix=" ms"),
                     fmt_range(reference["matched_speedup_lower_bound"], suffix="×"),
                 ]
@@ -1416,6 +1466,7 @@ def render_index(
                 "AFD topology",
                 "Measured grid",
                 "AGG MegaMoE stage latency",
+                "AGG DeepEP+DeepGEMM stage latency",
                 "AFD F-stage latency",
                 "DeepEP/MegaMoE conservative bound",
             ],
@@ -1583,6 +1634,11 @@ def render_index(
                 "This is a scale trend, not a cross-model absolute-throughput comparison.",
                 "Model-specific attention structure/backend and MoE structure/kernel/precision are listed in section 1; "
                 "each AGG/AFD pair is matched within its model.",
+                data_table=chart_data_table(
+                    series,
+                    x_label="Fixed GPU pool size (GPUs)",
+                    y_label="Throughput ratio: AFD / AGG",
+                ),
             )
 
     body += "<h2>5. Complete fixed-pool winner matrix</h2>"

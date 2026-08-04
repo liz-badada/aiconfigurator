@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-PROFILE_SCHEMA = "aic.afd-moe-stage-profile.v1"
+PROFILE_SCHEMA = "aic.afd-moe-stage-profile.v2"
+LEGACY_PROFILE_SCHEMA = "aic.afd-moe-stage-profile.v1"
 Stage = Literal["agg", "afd"]
 
 
@@ -28,6 +29,7 @@ class AFDMoEStageKey:
     microbatches: int
     moe_layers: int
     moe_precision: str
+    moe_backend: str
 
 
 @dataclass(frozen=True)
@@ -64,14 +66,18 @@ class AFDMoEStageProfile:
         payload = json.loads(source.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise TypeError("AFD MoE stage profile root must be an object")
-        if payload.get("schema") != PROFILE_SCHEMA:
+        schema = payload.get("schema")
+        if schema not in (LEGACY_PROFILE_SCHEMA, PROFILE_SCHEMA):
             raise ValueError(f"unsupported AFD MoE stage profile schema: {payload.get('schema')!r}")
         if payload.get("lookup_policy") != "exact-only":
             raise ValueError("AFD MoE stage profile lookup_policy must be 'exact-only'")
         raw_entries = payload.get("entries")
         if not isinstance(raw_entries, list):
             raise TypeError("AFD MoE stage profile entries must be a list")
-        return cls(tuple(_parse_entry(value, index) for index, value in enumerate(raw_entries)), source=source)
+        return cls(
+            tuple(_parse_entry(value, index, schema=schema) for index, value in enumerate(raw_entries)),
+            source=source,
+        )
 
     def find(self, key: AFDMoEStageKey) -> AFDMoEStageMeasurement | None:
         """Return the exact point, without interpolation or topology conversion."""
@@ -113,7 +119,7 @@ def _finite_float(value: Any, field: str, *, positive: bool = False) -> float:
     return result
 
 
-def _parse_entry(value: Any, index: int) -> AFDMoEStageMeasurement:
+def _parse_entry(value: Any, index: int, *, schema: str) -> AFDMoEStageMeasurement:
     prefix = f"entries[{index}]"
     raw = _object(value, prefix)
     stage = _string(raw.get("stage"), f"{prefix}.stage")
@@ -129,16 +135,14 @@ def _parse_entry(value: Any, index: int) -> AFDMoEStageMeasurement:
     if stage == "agg":
         if correctness is not True:
             raise ValueError(f"{prefix}.validation.correctness must be true for AGG")
-        speedup = _finite_float(speedup, f"{prefix}.validation.matched_speedup", positive=True)
-        if speedup <= 1:
-            raise ValueError(f"{prefix}.validation.matched_speedup must be > 1 for AGG")
-        speedup_lower_bound = _finite_float(
-            speedup_lower_bound,
-            f"{prefix}.validation.matched_speedup_lower_bound",
-            positive=True,
-        )
-        if speedup_lower_bound <= 1:
-            raise ValueError(f"{prefix}.validation.matched_speedup_lower_bound must be > 1 for AGG")
+        if speedup is not None:
+            speedup = _finite_float(speedup, f"{prefix}.validation.matched_speedup", positive=True)
+        if speedup_lower_bound is not None:
+            speedup_lower_bound = _finite_float(
+                speedup_lower_bound,
+                f"{prefix}.validation.matched_speedup_lower_bound",
+                positive=True,
+            )
     else:
         if correctness is not None and not isinstance(correctness, bool):
             raise ValueError(f"{prefix}.validation.correctness must be boolean or null")
@@ -166,6 +170,9 @@ def _parse_entry(value: Any, index: int) -> AFDMoEStageMeasurement:
         microbatches=_integer(raw.get("microbatches"), f"{prefix}.microbatches", minimum=1),
         moe_layers=_integer(raw.get("moe_layers"), f"{prefix}.moe_layers", minimum=1),
         moe_precision=_string(raw.get("moe_precision"), f"{prefix}.moe_precision"),
+        moe_backend=(
+            "megamoe" if schema == LEGACY_PROFILE_SCHEMA else _string(raw.get("moe_backend"), f"{prefix}.moe_backend")
+        ),
     )
     return AFDMoEStageMeasurement(
         key=key,
@@ -182,6 +189,7 @@ def _parse_entry(value: Any, index: int) -> AFDMoEStageMeasurement:
 
 
 __all__ = [
+    "LEGACY_PROFILE_SCHEMA",
     "PROFILE_SCHEMA",
     "AFDMoEStageKey",
     "AFDMoEStageMeasurement",

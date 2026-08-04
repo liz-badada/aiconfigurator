@@ -81,9 +81,11 @@ class PrecisionProfile:
     moe_kernel: str
     evidence: str
     exact_shape_data: bool
+    backend_family: str = "other"
     primary: bool = False
     total_gpu_grid: tuple[int, ...] = TOTAL_GPU_GRID
     measured_moe_precision: str | None = None
+    measured_moe_backend: str | None = None
     gemm_quant_mode: str | None = None
     kvcache_quant_mode: str | None = None
     fmha_quant_mode: str | None = None
@@ -134,11 +136,31 @@ MODELS = (
             PrecisionProfile(
                 key="mxfp4_mxfp8_megamoe",
                 moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
-                moe_kernel="sglang_mxfp4_flashinfer_trtllm_moe",
-                evidence="W4A8 quantization contract matching the exact MegaMoE profile key",
+                moe_kernel="megamoe_m2n",
+                evidence="exact measured MegaMoE profile only; generic fallback is never labeled MegaMoE",
                 exact_shape_data=False,
+                backend_family="megamoe",
                 primary=True,
                 measured_moe_precision="w4a8_mxfp4_mxfp8",
+                measured_moe_backend="megamoe",
+            ),
+            PrecisionProfile(
+                key="mxfp4_mxfp8_deepep_deepgemm",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="deepep_deepgemm",
+                evidence="exact measured DeepEP dispatch/combine plus DeepGEMM profile only",
+                exact_shape_data=False,
+                backend_family="deepep_deepgemm",
+                measured_moe_precision="w4a8_mxfp4_mxfp8",
+                measured_moe_backend="deepep_deepgemm",
+            ),
+            PrecisionProfile(
+                key="mxfp4_mxfp8_trtllm_control",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="sglang_mxfp4_flashinfer_trtllm_moe",
+                evidence="generic AIC SGLang FlashInfer/TensorRT-LLM MoE control",
+                exact_shape_data=False,
+                backend_family="trtllm",
             ),
             PrecisionProfile(
                 key="nvfp4_control",
@@ -187,11 +209,37 @@ MODELS = (
             PrecisionProfile(
                 key="mxfp4_mxfp8_megamoe",
                 moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
-                moe_kernel="sglang_mxfp4_flashinfer_trtllm_moe",
-                evidence="W4A8 quantization contract matching the exact MegaMoE profile key",
+                moe_kernel="megamoe_m2n",
+                evidence="exact measured MegaMoE profile only; generic fallback is never labeled MegaMoE",
                 exact_shape_data=False,
+                backend_family="megamoe",
                 primary=True,
                 measured_moe_precision="w4a8_mxfp4_mxfp8",
+                measured_moe_backend="megamoe",
+                gemm_quant_mode="fp8_block",
+                kvcache_quant_mode="bfloat16",
+                fmha_quant_mode="bfloat16",
+            ),
+            PrecisionProfile(
+                key="mxfp4_mxfp8_deepep_deepgemm",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="deepep_deepgemm",
+                evidence="exact measured DeepEP dispatch/combine plus DeepGEMM profile only",
+                exact_shape_data=False,
+                backend_family="deepep_deepgemm",
+                measured_moe_precision="w4a8_mxfp4_mxfp8",
+                measured_moe_backend="deepep_deepgemm",
+                gemm_quant_mode="fp8_block",
+                kvcache_quant_mode="bfloat16",
+                fmha_quant_mode="bfloat16",
+            ),
+            PrecisionProfile(
+                key="mxfp4_mxfp8_trtllm_control",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="sglang_mxfp4_flashinfer_trtllm_moe",
+                evidence="generic AIC SGLang FlashInfer/TensorRT-LLM MoE control",
+                exact_shape_data=False,
+                backend_family="trtllm",
                 gemm_quant_mode="fp8_block",
                 kvcache_quant_mode="bfloat16",
                 fmha_quant_mode="bfloat16",
@@ -249,11 +297,31 @@ MODELS = (
             PrecisionProfile(
                 key="mxfp4_mxfp8_megamoe",
                 moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
-                moe_kernel="sglang_mxfp4_flashinfer_trtllm_moe",
-                evidence="W4A8 quantization contract matching the exact MegaMoE profile key",
+                moe_kernel="megamoe_m2n",
+                evidence="exact measured MegaMoE profile only; generic fallback is never labeled MegaMoE",
                 exact_shape_data=False,
+                backend_family="megamoe",
                 primary=True,
                 measured_moe_precision="w4a8_mxfp4_mxfp8",
+                measured_moe_backend="megamoe",
+            ),
+            PrecisionProfile(
+                key="mxfp4_mxfp8_deepep_deepgemm",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="deepep_deepgemm",
+                evidence="exact measured DeepEP dispatch/combine plus DeepGEMM profile only",
+                exact_shape_data=False,
+                backend_family="deepep_deepgemm",
+                measured_moe_precision="w4a8_mxfp4_mxfp8",
+                measured_moe_backend="deepep_deepgemm",
+            ),
+            PrecisionProfile(
+                key="mxfp4_mxfp8_trtllm_control",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="sglang_mxfp4_flashinfer_trtllm_moe",
+                evidence="generic AIC SGLang FlashInfer/TensorRT-LLM MoE control",
+                exact_shape_data=False,
+                backend_family="trtllm",
             ),
             PrecisionProfile(
                 key="nvfp4_projected_control",
@@ -307,13 +375,33 @@ MODELS = (
         moe_structure="hidden=4096, expert_inter=2048, 256 routed experts, top-6",
         precision_profiles=(
             PrecisionProfile(
-                key="mxfp4_mxfp8",
+                key="mxfp4_mxfp8_megamoe",
                 moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
-                moe_kernel="sglang_mxfp4_flashinfer_trtllm_moe",
-                evidence="same-shape GB200 silicon",
+                moe_kernel="megamoe_m2n",
+                evidence="exact measured MegaMoE profile only; generic fallback is never labeled MegaMoE",
                 exact_shape_data=True,
+                backend_family="megamoe",
                 primary=True,
                 measured_moe_precision="w4a8_mxfp4_mxfp8",
+                measured_moe_backend="megamoe",
+            ),
+            PrecisionProfile(
+                key="mxfp4_mxfp8_deepep_deepgemm",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="deepep_deepgemm",
+                evidence="exact measured DeepEP dispatch/combine plus DeepGEMM profile only",
+                exact_shape_data=True,
+                backend_family="deepep_deepgemm",
+                measured_moe_precision="w4a8_mxfp4_mxfp8",
+                measured_moe_backend="deepep_deepgemm",
+            ),
+            PrecisionProfile(
+                key="mxfp4_mxfp8_trtllm_control",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="sglang_mxfp4_flashinfer_trtllm_moe",
+                evidence="generic AIC SGLang FlashInfer/TensorRT-LLM MoE control",
+                exact_shape_data=True,
+                backend_family="trtllm",
             ),
             PrecisionProfile(
                 key="fp8",
@@ -340,7 +428,7 @@ MODELS = (
         label="DeepSeek-V4-Pro",
         model_path="deepseek-ai/DeepSeek-V4-Pro",
         backend_version="0.5.12",
-        moe_backend="megamoe",
+        moe_backend=None,
         attention_heads=128,
         layers=61,
         moe_layers=61,
@@ -357,8 +445,28 @@ MODELS = (
                 moe_kernel="dsv4_megamoe_module_perf",
                 evidence="same-shape measured MegaMoE module; utilization-hold above measured token range",
                 exact_shape_data=True,
+                backend_family="megamoe",
                 primary=True,
                 measured_moe_precision="w4a8_mxfp4_mxfp8",
+                measured_moe_backend="megamoe",
+            ),
+            PrecisionProfile(
+                key="deepep_deepgemm_fp4",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="deepep_deepgemm",
+                evidence="exact measured DeepEP dispatch/combine plus DeepGEMM profile only",
+                exact_shape_data=False,
+                backend_family="deepep_deepgemm",
+                measured_moe_precision="w4a8_mxfp4_mxfp8",
+                measured_moe_backend="deepep_deepgemm",
+            ),
+            PrecisionProfile(
+                key="trtllm_fp4_control",
+                moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
+                moe_kernel="sglang_mxfp4_flashinfer_trtllm_moe",
+                evidence="generic AIC SGLang FlashInfer/TensorRT-LLM MoE control",
+                exact_shape_data=True,
+                backend_family="trtllm",
             ),
         ),
         scenarios=(
@@ -404,7 +512,7 @@ def measured_stage(
     logical_batch_per_source_rank: int,
     microbatches: int,
 ) -> tuple[AFDMoEStageKey | None, AFDMoEStageMeasurement | None]:
-    if profile_path is None or precision.measured_moe_precision is None:
+    if profile_path is None or precision.measured_moe_precision is None or precision.measured_moe_backend is None:
         return None, None
     key = AFDMoEStageKey(
         model_path=spec.model_path,
@@ -416,6 +524,7 @@ def measured_stage(
         microbatches=microbatches,
         moe_layers=spec.moe_layers,
         moe_precision=precision.measured_moe_precision,
+        moe_backend=precision.measured_moe_backend,
     )
     return key, measured_profile(profile_path).find(key)
 
@@ -463,6 +572,42 @@ def measurement_record(
         "evidence": measurement.evidence,
         "matched_speedup": measurement.matched_speedup,
         "matched_speedup_lower_bound": measurement.matched_speedup_lower_bound,
+    }
+
+
+def measured_backend_label(measurement: AFDMoEStageMeasurement) -> str:
+    return f"measured-{measurement.key.moe_backend.replace('_', '-')}"
+
+
+def moe_backend_contract(
+    spec: ModelSpec,
+    precision: PrecisionProfile,
+    measurement: AFDMoEStageMeasurement | None,
+) -> dict[str, str]:
+    if measurement is not None:
+        return {
+            "moe_backend": measured_backend_label(measurement),
+            "moe_time_source": "exact-measured-profile",
+            "moe_kernel": measurement.key.moe_backend,
+        }
+
+    control = precision
+    if precision.measured_moe_backend is not None:
+        matches = tuple(
+            candidate
+            for candidate in spec.precision_profiles
+            if candidate.backend_family == "trtllm" and candidate.moe_quant_mode == precision.moe_quant_mode
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                f"{spec.key}/{precision.key} requires one generic TRT-LLM control for "
+                f"{precision.moe_quant_mode}, found {len(matches)}"
+            )
+        control = matches[0]
+    return {
+        "moe_backend": "generic-trtllm",
+        "moe_time_source": "aic-database",
+        "moe_kernel": control.moe_kernel,
     }
 
 
@@ -749,6 +894,7 @@ def agg_point(
     if (
         measured_profile_path is not None
         and precision.measured_moe_precision is not None
+        and precision.measured_moe_backend is not None
         and source_batch_per_rank is None
     ):
         moe_measurement = {
@@ -784,11 +930,7 @@ def agg_point(
         "moe_measurement": moe_measurement,
         "backend_contract": {
             "framework": f"SGLang {MODEL_BY_KEY[model_key].backend_version}",
-            "moe_backend": (
-                "measured-megamoe" if measurement is not None else MODEL_BY_KEY[model_key].moe_backend or "default"
-            ),
-            "moe_time_source": "exact-measured-profile" if measurement is not None else "aic-database",
-            "moe_kernel": "measured-profile" if measurement is not None else precision.moe_kernel,
+            **moe_backend_contract(MODEL_BY_KEY[model_key], precision, measurement),
             "moe_precision": model_config.moe_quant_mode.name,
             "attention_backend": MODEL_BY_KEY[model_key].attention_backend,
         },
@@ -1039,9 +1181,7 @@ def afd_point(
         },
         "backend_contract": {
             "framework": f"SGLang {spec.backend_version}",
-            "moe_backend": "measured-megamoe" if measurement is not None else spec.moe_backend or "default",
-            "moe_time_source": "exact-measured-profile" if measurement is not None else "aic-database",
-            "moe_kernel": "measured-profile" if measurement is not None else precision.moe_kernel,
+            **moe_backend_contract(spec, precision, measurement),
             "moe_precision": f_config.moe_quant_mode.name,
             "attention_backend": spec.attention_backend,
         },
@@ -1112,10 +1252,19 @@ def afd_cluster_rows(
     return rows, failures
 
 
-def selected_profiles(spec: ModelSpec, profile_scope: str) -> tuple[PrecisionProfile, ...]:
-    if profile_scope == "all":
-        return spec.precision_profiles
-    return tuple(profile for profile in spec.precision_profiles if profile.primary)
+def selected_profiles(
+    spec: ModelSpec,
+    profile_scope: str,
+    backend_families: set[str] | None = None,
+) -> tuple[PrecisionProfile, ...]:
+    profiles = (
+        spec.precision_profiles
+        if profile_scope == "all"
+        else tuple(profile for profile in spec.precision_profiles if profile.primary)
+    )
+    if backend_families is None:
+        return profiles
+    return tuple(profile for profile in profiles if profile.backend_family in backend_families)
 
 
 def afd_service_unit_grid(fixed_pool_sizes: tuple[int, ...]) -> tuple[int, ...]:
@@ -1138,6 +1287,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     selected_models = [MODEL_BY_KEY[key] for key in args.models]
     selected_workloads = list(args.workloads)
     selected_totals = tuple(sorted(set(args.total_gpus)))
+    selected_backend_families = None if not getattr(args, "moe_backends", None) else set(args.moe_backends)
     measured_profile_path = str(args.afd_moe_profile.resolve()) if args.afd_moe_profile is not None else None
     if measured_profile_path is not None:
         profile = measured_profile(measured_profile_path)
@@ -1152,7 +1302,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         for spec in selected_models
         for workload in selected_workloads
         for scenario in spec.scenarios
-        for precision in selected_profiles(spec, args.profile_scope)
+        for precision in selected_profiles(spec, args.profile_scope, selected_backend_families)
         if (
             fixed_pool_sizes := tuple(
                 total_gpus
@@ -1239,9 +1389,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "static_tp_grid": list(STATIC_TPS),
             "speed_floors_tokps_per_user": list(SPEED_FLOORS),
             "afd_moe_profile": measured_profile_path,
+            "moe_backends": (
+                sorted(selected_backend_families) if selected_backend_families is not None else "profile-scope"
+            ),
             "require_measured_moe": bool(args.require_measured_moe),
             "afd_moe_profile_policy": (
-                "exact model/system/stage/topology/source-batch/MTP/microbatch/layer/precision match; "
+                "exact model/system/stage/topology/source-batch/MTP/microbatch/layer/precision/backend match; "
                 "generic AIC fallback is explicit when no point matches"
             ),
             "batch_semantics": "batch_per_a_gpu; a_batch_size_per_worker=batch_per_a_gpu*a_tp",
@@ -1283,6 +1436,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workloads", nargs="+", choices=sorted(WORKLOADS), default=sorted(WORKLOADS))
     parser.add_argument("--total-gpus", nargs="+", type=int, default=list(TOTAL_GPU_GRID))
     parser.add_argument("--profile-scope", choices=("primary", "all"), default="all")
+    parser.add_argument(
+        "--moe-backends",
+        nargs="+",
+        choices=("megamoe", "deepep_deepgemm", "trtllm"),
+        help="Optional MoE backend-family filter; use with --profile-scope all for controls",
+    )
     parser.add_argument(
         "--afd-moe-profile",
         type=Path,
