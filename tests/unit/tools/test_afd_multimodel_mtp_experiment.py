@@ -15,6 +15,7 @@ pytestmark = pytest.mark.unit
 
 EXPERIMENT = Path(__file__).resolve().parents[3] / "tools" / "afd_multimodel_mtp_experiment.py"
 RENDERER = Path(__file__).resolve().parents[3] / "tools" / "render_afd_multimodel_mtp_report.py"
+BACKEND_RENDERER = Path(__file__).resolve().parents[3] / "tools" / "render_afd_backend_comparison.py"
 MOCKER_REPLAY = Path(__file__).resolve().parents[3] / "tools" / "afd_multimodel_mtp_mocker_replay.py"
 
 
@@ -30,6 +31,16 @@ def experiment_module():
 @pytest.fixture(scope="module")
 def renderer_module():
     spec = importlib.util.spec_from_file_location("render_afd_multimodel_mtp_report", RENDERER)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def backend_renderer_module(renderer_module):
+    del renderer_module
+    spec = importlib.util.spec_from_file_location("render_afd_backend_comparison", BACKEND_RENDERER)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -472,6 +483,16 @@ def test_renderer_ratio_series_omits_unavailable_pairs(renderer_module):
 
     assert series["No MTP"] == [(total, 1.1) for total in renderer_module.TOTAL_GPU_GRID if total != 16]
     assert series["With MTP"] == []
+
+
+def test_backend_renderer_parses_labeled_sweeps(backend_renderer_module):
+    assert backend_renderer_module.parse_sweep("MegaMoE=/tmp/sweep.json") == (
+        "MegaMoE",
+        Path("/tmp/sweep.json"),
+    )
+
+    with pytest.raises(backend_renderer_module.argparse.ArgumentTypeError, match=r"LABEL=/path/to/sweep\.json"):
+        backend_renderer_module.parse_sweep("/tmp/sweep.json")
 
 
 def test_renderer_pareto_charts_do_not_label_points(renderer_module):
