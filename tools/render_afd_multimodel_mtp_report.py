@@ -29,24 +29,24 @@ SYSTEM_LABELS = {
     "afd_mtp": "AGG + AFD + MTP",
 }
 COLORS = {
-    "AGG": "#0072B2",
-    "AGG + AFD": "#D55E00",
-    "AGG + MTP": "#56B4E9",
-    "AGG + AFD + MTP": "#E69F00",
-    "No MTP": "#0072B2",
-    "With MTP": "#E69F00",
-    "A path": "#0072B2",
-    "F path": "#D55E00",
-    "Pipeline cycle": "#111111",
-    "attention": "#0072B2",
-    "mHC": "#56B4E9",
-    "dense GEMM": "#009E73",
-    "router": "#F0E442",
-    "MoE / shared expert": "#D55E00",
-    "F collective": "#CC79A7",
-    "A combine": "#E69F00",
-    "A-F transfer": "#111111",
-    "norm / embedding / logits": "#999999",
+    "AGG": "#1A1A1A",
+    "AGG + AFD": "#76B900",
+    "AGG + MTP": "#707070",
+    "AGG + AFD + MTP": "#A4D65E",
+    "No MTP": "#1A1A1A",
+    "With MTP": "#76B900",
+    "A path": "#1A1A1A",
+    "F path": "#76B900",
+    "Pipeline cycle": "#707070",
+    "attention": "#76B900",
+    "mHC": "#A4D65E",
+    "dense GEMM": "#C4D600",
+    "router": "#4D4D4D",
+    "MoE / shared expert": "#1A1A1A",
+    "F collective": "#707070",
+    "A combine": "#9A9A9A",
+    "A-F transfer": "#BDBDBD",
+    "norm / embedding / logits": "#DDDDDD",
 }
 MODULE_ORDER = (
     "attention",
@@ -68,15 +68,15 @@ BACKEND_COMPARE_FIELDS = (
 )
 
 CSS = """
-:root{--ink:#17202a;--muted:#5f6b76;--line:#d8dee4;--panel:#f7f9fb;--blue:#0072B2;--orange:#D55E00;--green:#007a55}
-*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.52 Inter,system-ui,-apple-system,Segoe UI,sans-serif}
-main{max-width:1280px;margin:0 auto;padding:34px 34px 72px}h1{font-size:32px;line-height:1.15;margin:0 0 8px}h2{margin:38px 0 12px;padding-top:10px;border-top:2px solid var(--ink);font-size:22px}h3{font-size:17px;margin:22px 0 8px}.subtitle,.muted{color:var(--muted)}
-.nav{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0}.nav a,.pill{border:1px solid var(--line);border-radius:999px;padding:5px 10px;text-decoration:none;color:var(--ink);background:#fff}.nav a:hover{border-color:var(--blue)}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:16px 0}.card{border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--panel)}.card .value{font-size:25px;font-weight:750}.card .label{color:var(--muted);font-size:13px}
-.callout{border-left:5px solid var(--blue);background:#eef7fb;padding:12px 15px;margin:14px 0}.warn{border-left-color:var(--orange);background:#fff4ef}.ok{border-left-color:var(--green);background:#effaf6}
-.figure{border:1px solid var(--line);border-radius:10px;padding:14px;margin:16px 0;background:#fff}.figure svg{display:block;width:100%;height:auto}.comment{margin:10px 4px 2px;color:#34404b}.comment strong{color:var(--ink)}
-table{border-collapse:collapse;width:100%;margin:10px 0 18px;font-size:13px}th,td{border:1px solid var(--line);padding:7px 8px;text-align:right;vertical-align:top}th{background:#f1f4f6;white-space:nowrap}th:first-child,td:first-child{text-align:left}.scroll{overflow-x:auto}.wide table{min-width:1500px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.small{font-size:12px}.good{color:var(--green);font-weight:750}.bad{color:#b43b20;font-weight:750}.neutral{color:#5f6b76;font-weight:700}.foot{margin-top:38px;color:var(--muted);font-size:12px}
-svg text{font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;fill:#24313d}.grid{stroke:#dfe5ea;stroke-width:1}.axis{stroke:#53606b;stroke-width:1.2}.legend{font-size:12px}.tick{font-size:11px}.value-label{font-size:10px;font-weight:650}.ref{stroke:#777;stroke-width:1.2;stroke-dasharray:5 4}
+:root{--ink:#1A1A1A;--muted:#606060;--line:#D8D8D8;--panel:#F4F4F4;--blue:#76B900;--orange:#4D4D4D;--green:#76B900}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font:15px/1.52 Arial,Helvetica,sans-serif}
+main{max-width:1280px;margin:0 auto;padding:34px 34px 72px}h1{font-size:32px;line-height:1.15;margin:0 0 8px;padding-left:14px;border-left:7px solid var(--green)}h2{margin:38px 0 12px;padding-top:10px;border-top:3px solid var(--green);font-size:22px}h3{font-size:17px;margin:22px 0 8px}.subtitle,.muted{color:var(--muted)}
+.nav{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0}.nav a,.pill{border:1px solid var(--line);border-radius:2px;padding:5px 10px;text-decoration:none;color:var(--ink);background:#fff}.nav a:hover{border-color:var(--green);color:#4F7D00}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:16px 0}.card{border:1px solid var(--line);border-top:3px solid var(--green);border-radius:2px;padding:14px;background:var(--panel)}.card .value{font-size:25px;font-weight:750}.card .label{color:var(--muted);font-size:13px}
+.callout{border-left:5px solid var(--green);background:#F3F7EC;padding:12px 15px;margin:14px 0}.warn{border-left-color:#4D4D4D;background:#F3F3F3}.ok{border-left-color:var(--green);background:#F3F7EC}
+.figure{border:1px solid var(--line);border-radius:2px;padding:14px;margin:16px 0;background:#fff}.figure svg{display:block;width:100%;height:auto}.comment{margin:10px 4px 2px;color:#3F3F3F}.comment strong{color:var(--ink)}
+table{border-collapse:collapse;width:100%;margin:10px 0 18px;font-size:13px}th,td{border:1px solid var(--line);padding:7px 8px;text-align:right;vertical-align:top}th{background:#EEEEEE;white-space:nowrap;border-top:2px solid var(--green)}th:first-child,td:first-child{text-align:left}.scroll{overflow-x:auto}.wide table{min-width:1500px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.small{font-size:12px}.good{color:#4F7D00;font-weight:750}.bad{color:#A5361B;font-weight:750}.neutral{color:#606060;font-weight:700}.foot{margin-top:38px;color:var(--muted);font-size:12px}
+svg text{font-family:Arial,Helvetica,sans-serif;fill:#1A1A1A}.grid{stroke:#E2E2E2;stroke-width:1}.axis{stroke:#1A1A1A;stroke-width:1.4}.legend{font-size:12px}.tick{font-size:11px}.value-label{font-size:10px;font-weight:700;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}.ref{stroke:#707070;stroke-width:1.3;stroke-dasharray:6 4}
 @media print{main{max-width:none;padding:18px}.figure{break-inside:avoid}a{color:inherit}}
 """
 
@@ -525,6 +525,16 @@ def nice_max(value: float, minimum: float = 1.0) -> float:
     return step * magnitude
 
 
+def plot_value(value: float, scale: float) -> str:
+    if scale <= 3:
+        return f"{value:.2f}"
+    if abs(value) >= 100:
+        return f"{value:,.0f}"
+    if abs(value) >= 10:
+        return f"{value:.1f}"
+    return f"{value:.2f}"
+
+
 def line_svg(
     series: dict[str, list[tuple[float, float]]],
     *,
@@ -537,7 +547,7 @@ def line_svg(
     width: int = 900,
     height: int = 390,
 ) -> str:
-    left, right, top, bottom = 82, 28, 34, 68
+    left, right, top, bottom = 82, 28, 52, 68
     plot_w, plot_h = width - left - right, height - top - bottom
     values = [value for points in series.values() for _, value in points if math.isfinite(value)]
     if y_max is None:
@@ -567,13 +577,27 @@ def line_svg(
     if reference_y is not None and y_min <= reference_y <= y_max:
         y = y_pos(reference_y)
         parts.append(f'<line class="ref" x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}"/>')
-    for label, points in series.items():
+    label_offsets = (-10, 15, -24, 29, -38, 43)
+    for series_index, (label, points) in enumerate(series.items()):
         color = COLORS.get(label, "#666")
         ordered = sorted(points)
         coords = " ".join(f"{x_pos(x):.1f},{y_pos(y):.1f}" for x, y in ordered)
-        parts.append(f'<polyline points="{coords}" fill="none" stroke="{color}" stroke-width="2.5"/>')
+        dash = ("", ' stroke-dasharray="8 4"', ' stroke-dasharray="3 3"', ' stroke-dasharray="10 3 2 3"')[
+            series_index % 4
+        ]
+        parts.append(f'<polyline points="{coords}" fill="none" stroke="{color}" stroke-width="2.7"{dash}/>')
         for x, y in ordered:
-            parts.append(f'<circle cx="{x_pos(x):.1f}" cy="{y_pos(y):.1f}" r="4" fill="{color}"/>')
+            px, py = x_pos(x), y_pos(y)
+            label_y = min(max(py + label_offsets[series_index % len(label_offsets)], top + 10), top + plot_h - 5)
+            anchor = "start" if px < left + 28 else "end" if px > width - right - 28 else "middle"
+            label_x = px + 6 if anchor == "start" else px - 6 if anchor == "end" else px
+            parts.append(
+                f'<circle cx="{px:.1f}" cy="{py:.1f}" r="4.2" fill="{color}" stroke="#fff" stroke-width="1.4"/>'
+            )
+            parts.append(
+                f'<text class="value-label" style="fill:{color}" x="{label_x:.1f}" y="{label_y:.1f}" '
+                f'text-anchor="{anchor}">{plot_value(y, y_max - y_min)}</text>'
+            )
     legend_x = left
     for label in series:
         color = COLORS.get(label, "#666")
@@ -699,7 +723,7 @@ def scatter_svg(
     width: int = 900,
     height: int = 400,
 ) -> str:
-    left, right, top, bottom = 82, 26, 38, 68
+    left, right, top, bottom = 82, 26, 52, 68
     plot_w, plot_h = width - left - right, height - top - bottom
 
     def x_pos(value: float) -> float:
@@ -720,13 +744,28 @@ def scatter_svg(
             f'<text class="tick" x="{x:.1f}" y="{top + plot_h + 22}" text-anchor="middle">{x_value:.0f}</text>'
         )
         parts.append(f'<text class="tick" x="{left - 10}" y="{y + 4:.1f}" text-anchor="end">{y_value:.0f}</text>')
-    for label, points in series.items():
+    label_offsets = (-9, 14, -22, 27, -35, 40)
+    for series_index, (label, points) in enumerate(series.items()):
         color = COLORS[label]
         ordered = sorted(points)
         coords = " ".join(f"{x_pos(x):.1f},{y_pos(y):.1f}" for x, y in ordered)
-        parts.append(f'<polyline points="{coords}" fill="none" stroke="{color}" stroke-width="2.4"/>')
-        for x, y in ordered:
-            parts.append(f'<circle cx="{x_pos(x):.1f}" cy="{y_pos(y):.1f}" r="3.6" fill="{color}"/>')
+        dash = ("", ' stroke-dasharray="8 4"', ' stroke-dasharray="3 3"', ' stroke-dasharray="10 3 2 3"')[
+            series_index % 4
+        ]
+        parts.append(f'<polyline points="{coords}" fill="none" stroke="{color}" stroke-width="2.6"{dash}/>')
+        for point_index, (x, y) in enumerate(ordered):
+            px, py = x_pos(x), y_pos(y)
+            offset = label_offsets[series_index % len(label_offsets)] + (4 if point_index % 2 else 0)
+            label_y = min(max(py + offset, top + 10), top + plot_h - 5)
+            anchor = "start" if px < left + 35 else "end" if px > width - right - 35 else "middle"
+            label_x = px + 5 if anchor == "start" else px - 5 if anchor == "end" else px
+            parts.append(
+                f'<circle cx="{px:.1f}" cy="{py:.1f}" r="3.9" fill="{color}" stroke="#fff" stroke-width="1.3"/>'
+            )
+            parts.append(
+                f'<text class="value-label" style="fill:{color}" x="{label_x:.1f}" y="{label_y:.1f}" '
+                f'text-anchor="{anchor}">{plot_value(y, y_max)}</text>'
+            )
     parts.append(f'<line class="axis" x1="{left}" x2="{width - right}" y1="{top + plot_h}" y2="{top + plot_h}"/>')
     parts.append(f'<line class="axis" x1="{left}" x2="{left}" y1="{top}" y2="{top + plot_h}"/>')
     legend_x = left
@@ -1528,7 +1567,7 @@ def render_index(
                 ]
                 series[summary["label"]] = points
                 COLORS.setdefault(
-                    summary["label"], ("#0072B2", "#009E73", "#D55E00", "#CC79A7", "#E69F00")[len(series) - 1]
+                    summary["label"], ("#1A1A1A", "#76B900", "#707070", "#A4D65E", "#4D4D4D")[len(series) - 1]
                 )
             max_ratio = max(value for points in series.values() for _, value in points)
             body += f"<h3>{workload.upper()} · {mode}</h3>"

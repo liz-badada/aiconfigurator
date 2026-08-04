@@ -177,3 +177,30 @@ def test_renderer_summarizes_mocker_accounting_without_case_artifacts(renderer_m
     assert summary["no_mtp_max_abs_tpot_error_pct"] == 0.0
     assert summary["mtp_max_abs_tpot_error_pct"] == 0.2
     assert summary["mtp_finite_efficiency"] == [0.91, 0.91]
+
+
+def test_renderer_line_charts_use_nvidia_palette_and_label_every_point(renderer_module):
+    svg = renderer_module.line_svg(
+        {"AGG": [(16, 1.0), (24, 1.1)], "AGG + AFD": [(16, 1.2), (24, 1.3)]},
+        x_label="GPU count",
+        y_label="Ratio",
+        x_ticks=(16, 24),
+        y_max=2.0,
+    )
+
+    assert renderer_module.COLORS["AGG + AFD"] == "#76B900"
+    assert svg.count('class="value-label"') == 4
+    assert ">1.20</text>" in svg
+    assert ">1.30</text>" in svg
+
+
+def test_renderer_pareto_charts_label_every_point(renderer_module):
+    svg = renderer_module.scatter_svg(
+        {"AGG": [(10.0, 120.0)], "AGG + AFD": [(8.0, 150.0)]},
+        x_max=50.0,
+        y_max=200.0,
+    )
+
+    assert svg.count('class="value-label"') == 2
+    assert ">120</text>" in svg
+    assert ">150</text>" in svg
