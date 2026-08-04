@@ -1,14 +1,33 @@
 # AFD MoE profile reproduction
 
-This branch supports two explicit simulation modes:
+This branch supports three explicit simulation modes:
 
 - Generic AIC: use the configured SGLang operation database for both AGG and AFD.
-- Measured MoE: replace only an exact matching MoE-stage point in both arms and retain AIC attention, router, memory, MTP progress, and uncovered layer work.
+- Exact measured MoE: replace only a full-key match in both arms.
+- Measured-load projection: interpolate inside a qualified physical-load
+  envelope and retain AIC attention, router, memory, MTP progress, and
+  uncovered layer work.
 
-Measured lookup never interpolates. The full key is model, system, stage,
+Exact lookup never interpolates. The full key is model, system, stage,
 topology, logical batch per source rank, MTP `nextn`, microbatch count, MoE
-layer count, precision, and backend. A B200 point therefore cannot calibrate a
-GB200 simulation, and a MegaMoE point cannot calibrate a DeepEP+DeepGEMM arm.
+layer count, precision, and backend. Exact mode therefore cannot inject a B200
+point into a GB200 simulation, and a MegaMoE point cannot supply a
+DeepEP+DeepGEMM arm.
+
+Load projection is a separate, explicitly labeled policy. It groups anchors
+by model, measured system, stage, measured topology, MTP width, microbatch
+count, layer count, precision, and backend. Its physical token load is:
+
+```text
+AFD load per F rank per microbatch = (A GPUs / F GPUs) * source batch * (nextN + 1) / microbatches
+AGG load per F rank                 = source batch * (nextN + 1)
+```
+
+Latency is made non-decreasing with load and linearly interpolated between the
+two enclosing anchors. A point below the minimum or above the maximum anchor
+is dropped; extrapolation is never allowed. Moving an envelope between systems
+requires an explicit positive latency scale and remains a projection, not a
+measurement on the target system.
 
 ## Where the measured values live
 
@@ -27,8 +46,8 @@ activations). It must not be used to calibrate an `nvfp4` candidate.
 
 The measured profile can be loaded to audit its schema and provenance. Select
 the simulation hardware with `--system`; its node width comes from the AIC
-system specification. A GB200 sweep rejects a B200 profile by design, so a
-GB200 measured-only run requires a profile whose entries use `system=gb200`.
+system specification. A GB200 exact-measured run rejects a B200 profile by
+design, so it requires entries whose `system=gb200`.
 The topology must match as well. For example, the current single-node B200
 `4A4F` and `2A6F` split measurements are evidence only for a `b200_sxm` AFD
 sweep because that AIC system has 8 GPUs per node and therefore starts at an
@@ -115,24 +134,47 @@ uv run python tools/afd_multimodel_mtp_experiment.py \
 
 Run the same measured-only command with
 `--moe-backends deepep_deepgemm` for DeepEP+DeepGEMM. The committed B200
-profile currently contains colocated AGG points for that backend but no split
-AFD points, so it cannot yet produce a paired DeepEP AFD comparison. The
-measured-only policy drops those missing arms instead of substituting another
-backend.
+profile may contain different qualified envelopes for the two backends. A
+missing arm is dropped instead of substituting another backend.
+
+Use a qualified B200 envelope as an explicitly labeled GB200 projection. The
+scale of `1.0` below carries B200 stage latency unchanged; it does not claim a
+GB200 measurement or an unmeasured hardware speedup:
+
+```bash
+uv run python tools/afd_multimodel_mtp_experiment.py \
+  --output /path/to/megamoe_load_projected_sweep.json \
+  --system gb200 \
+  --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
+  --workloads 8k 16k \
+  --total-gpus 16 24 36 48 72 \
+  --profile-scope all \
+  --moe-backends megamoe \
+  --afd-moe-profile /path/to/afd_moe_stage_profile.json \
+  --moe-profile-policy load-interpolate \
+  --moe-profile-source-system b200_sxm \
+  --moe-profile-latency-scale 1.0 \
+  --require-profiled-moe
+```
+
+Run the same command with `--moe-backends deepep_deepgemm` for the matched
+DeepEP+DeepGEMM four-arm sweep.
 
 The values passed to `--total-gpus` are fixed comparison-pool sizes. For AFD,
 the sweep independently evaluates every node-aligned service-unit size from
 two nodes through the largest selected pool, then the report packs identical
 units into each fixed pool and charges any idle remainder. On `gb200`, whose
-system specification has 4 GPUs per node, an exact `4A4F` measurement can
-therefore participate in a 16/24/36/48/72-GPU comparison. On `b200_sxm`, whose
-node width is 8, the smallest AFD topology is `8A8F`. AGG is optimized directly
-at each fixed pool size, including all valid node-aligned worker sizes.
+system specification has 4 GPUs per node, a `4A4F` B200 envelope can contribute
+only through the explicit load-projection policy above. On `b200_sxm`, whose
+node width is 8, the smallest node-aligned AFD topology is `8A8F`. AGG is
+optimized directly at each fixed pool size, including all valid node-aligned
+worker sizes.
 
-Each row records `moe_measurement.used`, the exact lookup key, measured
-latency, generic residual, source commit/tree hash, and backend contract. The
-residual is limited to MTP auxiliary layer-equivalents and decoder layers not
-covered by the measured MoE boundary.
+Each row records `moe_measurement.used`, timing source, target key, measured
+anchors, target physical load, interpolation scale, injected latency, generic
+residual, source commit/tree hash, and backend contract. The residual is
+limited to MTP auxiliary layer-equivalents and decoder layers not covered by
+the measured MoE boundary.
 
 ## 4. Render the self-contained HTML report
 
@@ -147,8 +189,8 @@ uv run python tools/render_afd_multimodel_mtp_report.py \
 
 Open `/path/to/measured_report/index.html`. Every chart is inline SVG, so the
 report directory has no external image dependency. Model pages list the exact
-measured MoE-stage key, latency, residual AIC work, validation speedup bound,
-and source commit used by each selected point.
+key or enclosing load anchors, injected latency, residual AIC work, and source
+commit used by each selected point.
 
 `--moe-reference-profile` is also valid when rendering a generic GB200 sweep
 from the qualified B200 profile. In that case the report places the B200
@@ -206,7 +248,9 @@ uv run python tools/render_afd_multimodel_mtp_report.py \
 ```bash
 uv run ruff check src/aiconfigurator/sdk/afd_moe_profile.py \
   src/aiconfigurator/sdk/inference_session.py \
-  tools/afd_multimodel_mtp_experiment.py
+  tools/afd_multimodel_mtp_experiment.py \
+  tools/render_afd_multimodel_mtp_report.py
 uv run pytest -m unit tests/unit/sdk/test_afd_moe_profile.py \
-  tests/unit/cli/test_afd_phase_completion.py
+  tests/unit/cli/test_afd_phase_completion.py \
+  tests/unit/tools/test_afd_multimodel_mtp_experiment.py
 ```
