@@ -29,24 +29,24 @@ SYSTEM_LABELS = {
     "afd_mtp": "AGG + AFD + MTP",
 }
 COLORS = {
-    "AGG": "#1A1A1A",
+    "AGG": "#0072B2",
     "AGG + AFD": "#76B900",
-    "AGG + MTP": "#707070",
+    "AGG + MTP": "#56B4E9",
     "AGG + AFD + MTP": "#A4D65E",
-    "No MTP": "#1A1A1A",
-    "With MTP": "#76B900",
-    "A path": "#1A1A1A",
+    "No MTP": "#0072B2",
+    "With MTP": "#E69F00",
+    "A path": "#0072B2",
     "F path": "#76B900",
-    "Pipeline cycle": "#707070",
-    "attention": "#76B900",
-    "mHC": "#A4D65E",
-    "dense GEMM": "#C4D600",
-    "router": "#4D4D4D",
-    "MoE / shared expert": "#1A1A1A",
-    "F collective": "#707070",
-    "A combine": "#9A9A9A",
-    "A-F transfer": "#BDBDBD",
-    "norm / embedding / logits": "#DDDDDD",
+    "Pipeline cycle": "#E69F00",
+    "attention": "#0072B2",
+    "mHC": "#56B4E9",
+    "dense GEMM": "#76B900",
+    "router": "#F0E442",
+    "MoE / shared expert": "#4F7F00",
+    "F collective": "#CC79A7",
+    "A combine": "#E69F00",
+    "A-F transfer": "#D55E00",
+    "norm / embedding / logits": "#999999",
 }
 MODULE_ORDER = (
     "attention",
@@ -1567,7 +1567,7 @@ def render_index(
                 ]
                 series[summary["label"]] = points
                 COLORS.setdefault(
-                    summary["label"], ("#1A1A1A", "#76B900", "#707070", "#A4D65E", "#4D4D4D")[len(series) - 1]
+                    summary["label"], ("#76B900", "#0072B2", "#E69F00", "#CC79A7", "#4D4D4D")[len(series) - 1]
                 )
             max_ratio = max(value for points in series.values() for _, value in points)
             body += f"<h3>{workload.upper()} · {mode}</h3>"
