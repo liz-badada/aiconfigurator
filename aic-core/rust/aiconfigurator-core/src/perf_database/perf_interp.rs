@@ -16,8 +16,12 @@
 //!                             util space (log2 IDW, curve-coverage filter,
 //!                             distance gate; the gate is waived for a site
 //!                             beyond the scale-up frontier).
-//! 3. beyond the range      -> hold the boundary util (k_tail-median anchor),
-//!                             latency = SOL(query) / util
+//! 3. beyond the range      -> hold a boundary util, latency = SOL(query)/util.
+//!                             Multi-axis grids transfer the util from the
+//!                             `nn_leaves` nearest collected points in joint
+//!                             log2 space (inverse-distance blend, continuous
+//!                             — no nearest-path snap); 1-D curves anchor on
+//!                             the k_tail-median boundary points.
 //! 4. nothing to anchor on  -> Err (structured miss; never fabricate)
 //!
 //! Differences from the Python engine, all deliberate:
@@ -134,7 +138,9 @@ fn from_space(vt: ValueTransform, v: f64) -> f64 {
 /// Which of the two table shapes an op is (see the Python config module).
 pub enum Resolver {
     /// Grid-like, possibly corner-truncated tables (attention/MLA/DSA/...).
-    Grid { k_tail: usize },
+    /// `k_tail` anchors 1-D boundary holds; `nn_leaves` is the multi-axis
+    /// hold's joint-log kNN blend width (4 won the frontier-holdout LOO).
+    Grid { k_tail: usize, nn_leaves: usize },
     /// Scattered-sites-plus-curve tables (GEMM): `site_axes` identify a
     /// collected shape, each owning a sweep along `curve_axis`.
     ScatteredSites {
@@ -166,7 +172,10 @@ impl<'a> OpInterpConfig<'a> {
     pub fn grid(axes: &'static [&'static str], sol_fn: &'a dyn Fn(&[f64]) -> f64) -> Self {
         OpInterpConfig {
             axes,
-            resolver: Resolver::Grid { k_tail: 1 },
+            resolver: Resolver::Grid {
+                k_tail: 1,
+                nn_leaves: 4,
+            },
             sol_fn,
             value_transform: ValueTransform::Raw,
             transform_axis: None,
@@ -182,7 +191,10 @@ impl<'a> OpInterpConfig<'a> {
         assert!(transform_axis < axes.len());
         OpInterpConfig {
             axes,
-            resolver: Resolver::Grid { k_tail: 1 },
+            resolver: Resolver::Grid {
+                k_tail: 1,
+                nn_leaves: 4,
+            },
             sol_fn,
             value_transform: ValueTransform::Sqrt,
             transform_axis: Some(transform_axis),
@@ -370,53 +382,135 @@ fn grid_interior(
     }
 }
 
-/// Anchor past-the-frontier queries: snap to the nearest collected path, hold
-/// the boundary util (k_tail median along the innermost axis), and let
-/// SOL(query) carry the growth.
+/// Anchor past-the-frontier queries: transfer util from the `nn_leaves`
+/// nearest collected points in joint log2 space (inverse-distance^2 blend, the
+/// same transfer ScatteredSites uses between sites); latency = SOL(query)/util.
+///
+/// This replaces the earlier nearest-path snap, which was discontinuous at
+/// outer-axis midpoints (a +36.9% cliff between batch 192 and 193 on the B200
+/// generation-attention staircase) and could anchor on a frontier point in a
+/// different efficiency regime. Mirrors the Python engine's `_grid_hold`
+/// exactly (stable distance sort, skip-invalid-then-take-k selection).
+/// Single-axis tables keep the k_tail-median boundary hold.
 fn grid_hold(cfg: &OpInterpConfig, data: &Node, coords: &[f64]) -> Result<f64, AicError> {
-    let k_tail = match &cfg.resolver {
-        Resolver::Grid { k_tail } => *k_tail,
+    let (k_tail, nn_leaves) = match &cfg.resolver {
+        Resolver::Grid { k_tail, nn_leaves } => (*k_tail, *nn_leaves),
         Resolver::ScatteredSites { .. } => unreachable!("grid_hold on scattered resolver"),
     };
     let n_axes = cfg.axes.len();
-    let mut node = data;
-    let mut snapped: Vec<f64> = Vec::with_capacity(n_axes - 1);
-    for depth in 0..n_axes - 1 {
-        let map = node
-            .as_branch()
-            .ok_or_else(|| miss(cfg, coords, "table shallower than axes"))?;
-        if map.is_empty() {
-            return Err(miss(
-                cfg,
-                coords,
-                &format!("empty branch at axis '{}'", cfg.axes[depth]),
-            ));
-        }
-        let c = coords[depth];
-        let key = nearest_key(map, c);
-        snapped.push(key as f64);
-        node = &map[&key];
+    if n_axes == 1 {
+        return grid_hold_1d(cfg, data, coords, k_tail);
     }
-    let map = node
+
+    let anchors = hold_anchor_weights(cfg, data, coords, nn_leaves)?;
+    let wsum: f64 = anchors.iter().map(|a| a.weight).sum();
+    let u_acc: f64 = anchors.iter().map(|a| a.weight * (a.sol / a.latency)).sum();
+    if wsum <= 0.0 {
+        return Err(miss(cfg, coords, "no positive-util boundary anchor"));
+    }
+    let sol_q = (cfg.sol_fn)(coords);
+    if !(sol_q > 0.0) {
+        return Err(miss(cfg, coords, "non-positive SOL at query"));
+    }
+    Ok(sol_q / (u_acc / wsum))
+}
+
+/// One selected hold anchor: a measured leaf with its blend weight.
+pub(crate) struct HoldAnchor {
+    pub(crate) coords: Vec<u32>,
+    pub(crate) latency: f64,
+    pub(crate) sol: f64,
+    pub(crate) weight: f64,
+}
+
+/// The multi-axis hold's anchor selection: the `nn_leaves` nearest valid
+/// leaves in joint log2 space with their inverse-distance^2 weights.
+/// `pub(crate)` so owners that must split a summed leaf into components
+/// (wideep dispatch) reuse the engine's exact selection.
+pub(crate) fn hold_anchor_weights(
+    cfg: &OpInterpConfig,
+    data: &Node,
+    coords: &[f64],
+    nn_leaves: usize,
+) -> Result<Vec<HoldAnchor>, AicError> {
+    let mut leaves: Vec<(Vec<u32>, f64)> = Vec::new();
+    walk_leaves(data, &mut Vec::new(), &mut leaves);
+    if leaves.is_empty() {
+        return Err(miss(
+            cfg,
+            coords,
+            &format!("empty branch at axis '{}'", cfg.axes[0]),
+        ));
+    }
+    let q_log: Vec<f64> = coords.iter().map(|&v| v.max(1e-12).log2()).collect();
+    let dist = |c: &[u32]| -> f64 {
+        c.iter()
+            .zip(&q_log)
+            .map(|(&v, ql)| {
+                let d = ((v as f64).max(1e-12)).log2() - ql;
+                d * d
+            })
+            .sum::<f64>()
+            .sqrt()
+    };
+    let mut ranked: Vec<(f64, usize)> = leaves
+        .iter()
+        .enumerate()
+        .map(|(i, (c, _))| (dist(c), i))
+        .collect();
+    // Exact distance ties are real on power-of-two grids; the index tie-break
+    // is the leaf-coordinate lexicographic order (walk_leaves traverses
+    // BTreeMaps in ascending key order), matching the Python engine's
+    // explicit (distance, coords) sort key.
+    ranked.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    let mut anchors: Vec<HoldAnchor> = Vec::with_capacity(nn_leaves);
+    for &(d, i) in &ranked {
+        if anchors.len() >= nn_leaves {
+            break;
+        }
+        let (c, lat) = &leaves[i];
+        let anchor: Vec<f64> = c.iter().map(|&v| v as f64).collect();
+        let sol = (cfg.sol_fn)(&anchor);
+        if !(lat.is_finite() && *lat > 0.0 && sol.is_finite() && sol > 0.0) {
+            continue;
+        }
+        anchors.push(HoldAnchor {
+            coords: c.clone(),
+            latency: *lat,
+            sol,
+            weight: 1.0 / (d * d + 1e-12),
+        });
+    }
+    if anchors.is_empty() {
+        return Err(miss(cfg, coords, "no positive-util boundary anchor"));
+    }
+    Ok(anchors)
+}
+
+/// 1-D curve past the sweep end: hold the k_tail-median boundary util.
+fn grid_hold_1d(
+    cfg: &OpInterpConfig,
+    data: &Node,
+    coords: &[f64],
+    k_tail: usize,
+) -> Result<f64, AicError> {
+    let map = data
         .as_branch()
         .ok_or_else(|| miss(cfg, coords, "table shallower than axes"))?;
     if map.is_empty() {
         return Err(miss(
             cfg,
             coords,
-            &format!("empty branch at axis '{}'", cfg.axes[n_axes - 1]),
+            &format!("empty branch at axis '{}'", cfg.axes[0]),
         ));
     }
-
     let keys: Vec<u32> = map.keys().copied().collect();
-    let c = coords[n_axes - 1];
+    let c = coords[0];
     let tail: Vec<u32> = if c > keys[keys.len() - 1] as f64 {
         keys[keys.len().saturating_sub(k_tail)..].to_vec()
-    } else if c < keys[0] as f64 {
-        keys[..k_tail.min(keys.len())].to_vec()
     } else {
-        // innermost is in range; an OUTER axis was snapped
-        vec![nearest_key(map, c)]
+        keys[..k_tail.min(keys.len())].to_vec()
     };
 
     let mut utils: Vec<f64> = Vec::with_capacity(tail.len());
@@ -424,9 +518,7 @@ fn grid_hold(cfg: &OpInterpConfig, data: &Node, coords: &[f64]) -> Result<f64, A
         let Some(lat) = map[&t].as_leaf() else {
             continue;
         };
-        let mut anchor = snapped.clone();
-        anchor.push(t as f64);
-        let sol = (cfg.sol_fn)(&anchor);
+        let sol = (cfg.sol_fn)(&[t as f64]);
         if lat > 0.0 && sol > 0.0 {
             utils.push(sol / lat);
         }
@@ -439,16 +531,6 @@ fn grid_hold(cfg: &OpInterpConfig, data: &Node, coords: &[f64]) -> Result<f64, A
         return Err(miss(cfg, coords, "non-positive SOL at query"));
     }
     Ok(sol_q / median(&mut utils))
-}
-
-fn nearest_key(map: &BTreeMap<u32, Node>, c: f64) -> u32 {
-    *map.keys()
-        .min_by(|a, b| {
-            let da = (**a as f64 - c).abs();
-            let db = (**b as f64 - c).abs();
-            da.total_cmp(&db)
-        })
-        .expect("nearest_key on empty map")
 }
 
 fn median(values: &mut [f64]) -> f64 {
@@ -904,6 +986,75 @@ mod tests {
         let t = Node::branch();
         let cfg = attn_cfg(&attn_lat);
         assert!(query(&cfg, &t, &[8.0, 512.0, 1.0]).is_err());
+    }
+
+    // Multi-axis hold: joint-log2 kNN util transfer (the B200 gen-attn report
+    // case). Staircase with a REGIME SPLIT: the deep b=128 row is collected at
+    // exact physics while the short b=256 row ends early in a 1.4x-latency
+    // regime (like the real 128K-token-capped b>=256 rows). Every query below
+    // is past the frontier on both rows.
+    fn gen_lat(c: &[f64]) -> f64 {
+        1e-6 * c[0] * c[1] * c[2] // decode physics: [n][b][s], linear in both
+    }
+
+    fn gen_split_table() -> Node {
+        let mut root = Node::branch();
+        for s in [512u32, 1024, 2048] {
+            root.insert(&[64, 128, s], gen_lat(&[64.0, 128.0, s as f64]));
+        }
+        for s in [128u32, 256, 512] {
+            root.insert(&[64, 256, s], 1.4 * gen_lat(&[64.0, 256.0, s as f64]));
+        }
+        root
+    }
+
+    #[test]
+    fn grid_hold_is_continuous_across_outer_midpoint() {
+        // The nearest-path snap flipped anchors at the bracket midpoint
+        // (b=192 -> row 128, b=193 -> row 256), a +36.9% cliff on the real
+        // B200 table where measured hardware moves +0.17%. The kNN hold must
+        // stay continuous: the 192->193 step may not exceed the SOL growth by
+        // more than a percent.
+        let t = gen_split_table();
+        let cfg = OpInterpConfig::grid(&["num_heads", "batch", "seq_len"], &gen_lat);
+        let lat_192 = query(&cfg, &t, &[64.0, 192.0, 4096.0]).unwrap();
+        let lat_193 = query(&cfg, &t, &[64.0, 193.0, 4096.0]).unwrap();
+        let sol_step = gen_lat(&[64.0, 193.0, 4096.0]) / gen_lat(&[64.0, 192.0, 4096.0]);
+        assert!((lat_193 / lat_192 - sol_step).abs() < 0.01);
+    }
+
+    #[test]
+    fn grid_hold_prefers_nearby_saturated_evidence() {
+        // A query deep past the short row's end (b=256, s=4096) must not
+        // inherit that row's unsaturated 1.4x boundary util verbatim (the old
+        // snap did, +41% on the reported B200 case): the joint-log nearest
+        // leaves are the deep saturated ones, so the answer lands near physics.
+        let t = gen_split_table();
+        let cfg = OpInterpConfig::grid(&["num_heads", "batch", "seq_len"], &gen_lat);
+        let lat = query(&cfg, &t, &[64.0, 256.0, 4096.0]).unwrap();
+        let ratio = lat / gen_lat(&[64.0, 256.0, 4096.0]);
+        assert!(ratio < 1.15, "snap gave 1.4x, got {ratio}");
+        assert!(ratio > 0.95, "got {ratio}");
+    }
+
+    #[test]
+    fn grid_hold_is_axis_order_independent() {
+        // The hold works on joint coordinates, not the nesting order: the
+        // same data nested [n][b][s] and [n][s][b] must answer a past-frontier
+        // query identically.
+        let t = gen_split_table();
+        let cfg = OpInterpConfig::grid(&["num_heads", "batch", "seq_len"], &gen_lat);
+        let mut swapped = Node::branch();
+        let mut leaves: Vec<(Vec<u32>, f64)> = Vec::new();
+        walk_leaves(&t, &mut Vec::new(), &mut leaves);
+        for (c, lat) in &leaves {
+            swapped.insert(&[c[0], c[2], c[1]], *lat);
+        }
+        let sol_swapped = |c: &[f64]| gen_lat(&[c[0], c[2], c[1]]);
+        let cfg_swapped = OpInterpConfig::grid(&["num_heads", "seq_len", "batch"], &sol_swapped);
+        let lat = query(&cfg, &t, &[64.0, 200.0, 4096.0]).unwrap();
+        let lat_swapped = query(&cfg_swapped, &swapped, &[64.0, 4096.0, 200.0]).unwrap();
+        assert!((lat - lat_swapped).abs() <= 1e-12 * lat.abs());
     }
 
     // 4-axis (DSA/CSA-like): [num_heads][prefix][seq][batch]
