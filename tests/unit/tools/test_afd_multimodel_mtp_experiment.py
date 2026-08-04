@@ -103,6 +103,105 @@ def test_missing_measurement_is_labeled_as_generic_control(experiment_module, ba
     }
 
 
+def test_cross_system_load_projection_is_explicit_and_backend_qualified(experiment_module, tmp_path):
+    spec = experiment_module.MODEL_BY_KEY["qwen3_235b"]
+    precision = experiment_module.selected_profiles(spec, "all", {"megamoe"})[0]
+    entries = []
+    for batch, latency in ((48, 4.0), (96, 8.0)):
+        entries.append(
+            {
+                "model_path": spec.model_path,
+                "model_profile": "qwen3_235b_fp4",
+                "system": "b200_sxm",
+                "stage": "afd",
+                "topology": "4A4F",
+                "logical_batch_per_source_rank": batch,
+                "mtp_nextn": 0,
+                "microbatches": 2,
+                "moe_layers": spec.moe_layers,
+                "moe_precision": precision.measured_moe_precision,
+                "moe_backend": "megamoe",
+                "latency_ms": latency,
+                "validation": {
+                    "stable": True,
+                    "correctness": None,
+                    "matched_speedup": None,
+                    "matched_speedup_lower_bound": None,
+                    "evidence": "stable-split",
+                },
+                "source": {
+                    "commit": "abc123",
+                    "source_tree_sha256": "deadbeef",
+                    "result": f"/measurements/{batch}.json",
+                },
+            }
+        )
+    path = tmp_path / "profile.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "aic.afd-moe-stage-profile.v2",
+                "lookup_policy": "exact-only",
+                "entries": entries,
+            }
+        )
+    )
+
+    key, timing = experiment_module.measured_stage(
+        str(path),
+        spec=spec,
+        precision=precision,
+        scenario=experiment_module.NO_MTP,
+        stage="afd",
+        topology="12A4F",
+        logical_batch_per_source_rank=24,
+        microbatches=2,
+        target_load_per_f_rank=36,
+        profile_policy="load-interpolate",
+        profile_source_system="b200_sxm",
+        profile_latency_scale=1.0,
+        system="gb200",
+    )
+
+    assert key is not None
+    assert isinstance(timing, experiment_module.AFDMoEStageProjection)
+    assert timing.latency_ms == pytest.approx(6.0)
+    assert experiment_module.moe_backend_contract(spec, precision, timing) == {
+        "moe_backend": "projected-megamoe",
+        "moe_time_source": "load-interpolated-profile",
+        "moe_kernel": "megamoe",
+    }
+    record = experiment_module.measurement_record(key, timing, profile_path=str(path))
+    assert record["timing_source"] == "load-interpolated-profile"
+    assert record["target_load_per_f_rank"] == pytest.approx(36)
+    assert len(record["anchors"]) == 2
+
+
+def test_cross_system_load_projection_requires_explicit_scale(experiment_module, tmp_path):
+    spec = experiment_module.MODEL_BY_KEY["qwen3_235b"]
+    precision = experiment_module.selected_profiles(spec, "all", {"megamoe"})[0]
+    path = tmp_path / "profile.json"
+    path.write_text(
+        json.dumps({"schema": "aic.afd-moe-stage-profile.v2", "lookup_policy": "exact-only", "entries": []})
+    )
+
+    with pytest.raises(ValueError, match="explicit profile latency scale"):
+        experiment_module.measured_stage(
+            str(path),
+            spec=spec,
+            precision=precision,
+            scenario=experiment_module.NO_MTP,
+            stage="afd",
+            topology="12A4F",
+            logical_batch_per_source_rank=24,
+            microbatches=2,
+            target_load_per_f_rank=36,
+            profile_policy="load-interpolate",
+            profile_source_system="b200_sxm",
+            system="gb200",
+        )
+
+
 def test_run_sweeps_fixed_agg_pools_and_all_fitting_afd_units(experiment_module, monkeypatch, tmp_path):
     agg_sizes = []
     afd_sizes = []
@@ -245,6 +344,24 @@ def test_renderer_requires_exact_measured_moe_on_every_arm(renderer_module):
 
     contracts["AGG + MTP"]["moe_time_source"] = "aic-database"
     assert not renderer_module.all_arms_use_exact_measured_moe(contracts)
+
+
+def test_renderer_labels_matched_load_projected_backends(renderer_module):
+    projected = {
+        "moe_backend": "projected-megamoe",
+        "moe_time_source": "load-interpolated-profile",
+    }
+    contracts = {arm: dict(projected) for arm in ("AGG", "AGG + AFD", "AGG + MTP", "AGG + AFD + MTP")}
+
+    assert renderer_module.is_megamoe_backend("projected-megamoe")
+    assert renderer_module.backend_display_name("projected-megamoe") == "MegaMoE (measured-load projection)"
+    assert renderer_module.backend_display_name("projected-deepep-deepgemm") == (
+        "DeepEP+DeepGEMM (measured-load projection)"
+    )
+    assert renderer_module.all_arms_use_load_projected_moe(contracts)
+
+    contracts["AGG + AFD"]["moe_time_source"] = "aic-database"
+    assert not renderer_module.all_arms_use_load_projected_moe(contracts)
 
 
 def test_renderer_summarizes_external_moe_reference_without_calibrating(renderer_module, tmp_path):

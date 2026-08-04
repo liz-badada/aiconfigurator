@@ -198,3 +198,163 @@ def test_profile_rejects_unvalidated_measurements(tmp_path, entry, match):
 def test_profile_rejects_duplicate_exact_key(tmp_path):
     with pytest.raises(ValueError, match="duplicate"):
         AFDMoEStageProfile.load(_write(tmp_path, [_entry(), _entry(latency_ms=5.0)]))
+
+
+def test_profile_interpolates_only_inside_one_measured_f_rank_load_envelope(tmp_path):
+    entries = [
+        _entry(
+            system="b200_sxm",
+            stage="afd",
+            topology="4A4F",
+            logical_batch_per_source_rank=48,
+            mtp_nextn=1,
+            microbatches=2,
+            latency_ms=4.0,
+            validation={
+                "stable": True,
+                "correctness": None,
+                "matched_speedup": None,
+                "matched_speedup_lower_bound": None,
+                "evidence": "stable-split",
+            },
+        ),
+        _entry(
+            system="b200_sxm",
+            stage="afd",
+            topology="4A4F",
+            logical_batch_per_source_rank=96,
+            mtp_nextn=1,
+            microbatches=2,
+            latency_ms=8.0,
+            validation={
+                "stable": True,
+                "correctness": None,
+                "matched_speedup": None,
+                "matched_speedup_lower_bound": None,
+                "evidence": "stable-split",
+            },
+        ),
+    ]
+    profile = AFDMoEStageProfile.load(_write(tmp_path, entries))
+    target = _key(
+        system="gb200",
+        stage="afd",
+        topology="12A4F",
+        logical_batch_per_source_rank=24,
+        mtp_nextn=1,
+        microbatches=2,
+    )
+
+    projection = profile.project_by_f_rank_load(
+        target,
+        source_system="b200_sxm",
+        target_load_per_f_rank=72,
+        latency_scale=1.1,
+    )
+
+    assert projection is not None
+    assert projection.latency_ms == pytest.approx(6.6)
+    assert projection.source_topology == "4A4F"
+    assert projection.lower_anchor_load == pytest.approx(48)
+    assert projection.upper_anchor_load == pytest.approx(96)
+    assert (
+        profile.project_by_f_rank_load(
+            target,
+            source_system="b200_sxm",
+            target_load_per_f_rank=97,
+        )
+        is None
+    )
+
+
+def test_profile_load_projection_uses_monotone_conservative_anchor_latency(tmp_path):
+    validation = {
+        "stable": True,
+        "correctness": None,
+        "matched_speedup": None,
+        "matched_speedup_lower_bound": None,
+        "evidence": "stable-split",
+    }
+    profile = AFDMoEStageProfile.load(
+        _write(
+            tmp_path,
+            [
+                _entry(
+                    system="b200_sxm",
+                    stage="afd",
+                    topology="4A4F",
+                    logical_batch_per_source_rank=48,
+                    latency_ms=8.0,
+                    validation=validation,
+                ),
+                _entry(
+                    system="b200_sxm",
+                    stage="afd",
+                    topology="4A4F",
+                    logical_batch_per_source_rank=96,
+                    latency_ms=7.0,
+                    validation=validation,
+                ),
+            ],
+        )
+    )
+    target = _key(system="gb200", stage="afd", topology="8A4F", logical_batch_per_source_rank=36)
+
+    projection = profile.project_by_f_rank_load(
+        target,
+        source_system="b200_sxm",
+        target_load_per_f_rank=72,
+    )
+
+    assert projection is not None
+    assert projection.latency_ms == pytest.approx(8.0)
+
+
+def test_profile_load_projection_requires_unambiguous_source_topology(tmp_path):
+    validation = {
+        "stable": True,
+        "correctness": None,
+        "matched_speedup": None,
+        "matched_speedup_lower_bound": None,
+        "evidence": "stable-split",
+    }
+    profile = AFDMoEStageProfile.load(
+        _write(
+            tmp_path,
+            [
+                _entry(
+                    system="b200_sxm",
+                    stage="afd",
+                    topology="4A4F",
+                    logical_batch_per_source_rank=48,
+                    latency_ms=4.0,
+                    validation=validation,
+                ),
+                _entry(
+                    system="b200_sxm",
+                    stage="afd",
+                    topology="2A2F",
+                    logical_batch_per_source_rank=48,
+                    latency_ms=5.0,
+                    validation=validation,
+                ),
+            ],
+        )
+    )
+    target = _key(system="gb200", stage="afd", topology="8A4F", logical_batch_per_source_rank=24)
+
+    with pytest.raises(ValueError, match="multiple measured topologies"):
+        profile.project_by_f_rank_load(
+            target,
+            source_system="b200_sxm",
+            target_load_per_f_rank=48,
+        )
+
+    projection = profile.project_by_f_rank_load(
+        target,
+        source_system="b200_sxm",
+        source_topology="4A4F",
+        target_load_per_f_rank=48,
+    )
+    assert projection is not None
+    assert projection.latency_ms == pytest.approx(4.0)

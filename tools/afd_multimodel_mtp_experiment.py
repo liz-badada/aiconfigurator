@@ -20,6 +20,7 @@ from aiconfigurator.sdk.afd_moe_profile import (
     AFDMoEStageKey,
     AFDMoEStageMeasurement,
     AFDMoEStageProfile,
+    AFDMoEStageProjection,
 )
 from aiconfigurator.sdk.backends.factory import get_backend
 from aiconfigurator.sdk.config import AFDConfig
@@ -483,6 +484,7 @@ MODELS = (
     ),
 )
 MODEL_BY_KEY = {model.key: model for model in MODELS}
+MoEStageTiming = AFDMoEStageMeasurement | AFDMoEStageProjection
 
 
 def git_value(*args: str) -> str:
@@ -512,8 +514,12 @@ def measured_stage(
     topology: str,
     logical_batch_per_source_rank: int,
     microbatches: int,
+    target_load_per_f_rank: float,
+    profile_policy: str = "exact",
+    profile_source_system: str | None = None,
+    profile_latency_scale: float | None = None,
     system: str = DEFAULT_SYSTEM,
-) -> tuple[AFDMoEStageKey | None, AFDMoEStageMeasurement | None]:
+) -> tuple[AFDMoEStageKey | None, MoEStageTiming | None]:
     if profile_path is None or precision.measured_moe_precision is None or precision.measured_moe_backend is None:
         return None, None
     key = AFDMoEStageKey(
@@ -528,7 +534,21 @@ def measured_stage(
         moe_precision=precision.measured_moe_precision,
         moe_backend=precision.measured_moe_backend,
     )
-    return key, measured_profile(profile_path).find(key)
+    profile = measured_profile(profile_path)
+    exact = profile.find(key)
+    if exact is not None or profile_policy == "exact":
+        return key, exact
+    if profile_policy != "load-interpolate":
+        raise ValueError(f"unsupported MoE profile policy: {profile_policy!r}")
+    source_system = profile_source_system or system
+    if source_system != system and profile_latency_scale is None:
+        raise ValueError("cross-system MoE load projection requires an explicit profile latency scale")
+    return key, profile.project_by_f_rank_load(
+        key,
+        source_system=source_system,
+        target_load_per_f_rank=target_load_per_f_rank,
+        latency_scale=1.0 if profile_latency_scale is None else profile_latency_scale,
+    )
 
 
 def unmeasured_moe_fraction(spec: ModelSpec, scenario: Scenario) -> float:
@@ -546,7 +566,7 @@ def unmeasured_moe_fraction(spec: ModelSpec, scenario: Scenario) -> float:
 
 def measurement_record(
     key: AFDMoEStageKey | None,
-    measurement: AFDMoEStageMeasurement | None,
+    measurement: MoEStageTiming | None,
     *,
     profile_path: str | None,
     generic_residual_ms: float = 0.0,
@@ -561,9 +581,39 @@ def measurement_record(
             "profile": profile_path,
             "key": asdict(key),
         }
+    if isinstance(measurement, AFDMoEStageProjection):
+        return {
+            "requested": True,
+            "used": True,
+            "timing_source": "load-interpolated-profile",
+            "profile": profile_path,
+            "key": asdict(key),
+            "projected_latency_ms": measurement.latency_ms,
+            "source_system": measurement.source_system,
+            "source_topology": measurement.source_topology,
+            "target_load_per_f_rank": measurement.target_load_per_f_rank,
+            "latency_scale": measurement.latency_scale,
+            "generic_residual_ms": generic_residual_ms,
+            "evidence": measurement.evidence,
+            "anchors": [
+                {
+                    "load_per_f_rank": load,
+                    "logical_batch_per_source_rank": anchor.key.logical_batch_per_source_rank,
+                    "latency_ms": anchor.latency_ms,
+                    "source_commit": anchor.source_commit,
+                    "source_tree_sha256": anchor.source_tree_sha256,
+                    "source_result": anchor.source_result,
+                }
+                for load, anchor in (
+                    (measurement.lower_anchor_load, measurement.lower_anchor),
+                    (measurement.upper_anchor_load, measurement.upper_anchor),
+                )
+            ],
+        }
     return {
         "requested": True,
         "used": True,
+        "timing_source": "exact-measured-profile",
         "profile": profile_path,
         "key": asdict(key),
         "measured_latency_ms": measurement.latency_ms,
@@ -577,19 +627,24 @@ def measurement_record(
     }
 
 
-def measured_backend_label(measurement: AFDMoEStageMeasurement) -> str:
-    return f"measured-{measurement.key.moe_backend.replace('_', '-')}"
+def measured_backend_label(measurement: MoEStageTiming) -> str:
+    prefix = "projected" if isinstance(measurement, AFDMoEStageProjection) else "measured"
+    return f"{prefix}-{measurement.key.moe_backend.replace('_', '-')}"
 
 
 def moe_backend_contract(
     spec: ModelSpec,
     precision: PrecisionProfile,
-    measurement: AFDMoEStageMeasurement | None,
+    measurement: MoEStageTiming | None,
 ) -> dict[str, str]:
     if measurement is not None:
         return {
             "moe_backend": measured_backend_label(measurement),
-            "moe_time_source": "exact-measured-profile",
+            "moe_time_source": (
+                "load-interpolated-profile"
+                if isinstance(measurement, AFDMoEStageProjection)
+                else "exact-measured-profile"
+            ),
             "moe_kernel": measurement.key.moe_backend,
         }
 
@@ -850,6 +905,9 @@ def agg_point(
     local_batch: int,
     measured_profile_path: str | None,
     system: str = DEFAULT_SYSTEM,
+    profile_policy: str = "exact",
+    profile_source_system: str | None = None,
+    profile_latency_scale: float | None = None,
 ) -> dict[str, Any]:
     task = task_for(model_key, workload, scenario_name, precision_key, system)
     scenario = scenario_for(model_key, scenario_name)
@@ -883,6 +941,10 @@ def agg_point(
             topology=f"ep{world}",
             logical_batch_per_source_rank=source_batch_per_rank,
             microbatches=1,
+            target_load_per_f_rank=source_batch_per_rank * scenario.verification_width,
+            profile_policy=profile_policy,
+            profile_source_system=profile_source_system,
+            profile_latency_scale=profile_latency_scale,
             system=system,
         )
     generic_moe_ms = 0.0
@@ -969,6 +1031,9 @@ def agg_cluster_rows(
     *,
     system: str = DEFAULT_SYSTEM,
     gpus_per_node: int = DEFAULT_GPUS_PER_NODE,
+    profile_policy: str = "exact",
+    profile_source_system: str | None = None,
+    profile_latency_scale: float | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -991,7 +1056,10 @@ def agg_cluster_rows(
                         tp,
                         int(local_batch),
                         measured_profile_path,
-                        system,
+                        system=system,
+                        profile_policy=profile_policy,
+                        profile_source_system=profile_source_system,
+                        profile_latency_scale=profile_latency_scale,
                     )
                     if point["oom"]:
                         continue
@@ -1041,6 +1109,9 @@ def afd_point(
     measured_profile_path: str | None,
     system: str = DEFAULT_SYSTEM,
     gpus_per_node: int = DEFAULT_GPUS_PER_NODE,
+    profile_policy: str = "exact",
+    profile_source_system: str | None = None,
+    profile_latency_scale: float | None = None,
 ) -> dict[str, Any]:
     task = task_for(spec.key, workload, scenario.name, precision.key, system)
     database = database_for(spec.key, workload, scenario.name, precision.key, system)
@@ -1086,6 +1157,10 @@ def afd_point(
         topology=f"{a_gpus}A{f_gpus}F",
         logical_batch_per_source_rank=batch_per_a_gpu,
         microbatches=microbatches,
+        target_load_per_f_rank=(a_gpus * batch_per_a_gpu * scenario.verification_width / (f_gpus * microbatches)),
+        profile_policy=profile_policy,
+        profile_source_system=profile_source_system,
+        profile_latency_scale=profile_latency_scale,
         system=system,
     )
     runtime_config = task.build_runtime_config(batch_size=global_requests)
@@ -1227,6 +1302,9 @@ def afd_cluster_rows(
     *,
     system: str = DEFAULT_SYSTEM,
     gpus_per_node: int = DEFAULT_GPUS_PER_NODE,
+    profile_policy: str = "exact",
+    profile_source_system: str | None = None,
+    profile_latency_scale: float | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -1258,6 +1336,9 @@ def afd_cluster_rows(
                                 measured_profile_path=measured_profile_path,
                                 system=system,
                                 gpus_per_node=gpus_per_node,
+                                profile_policy=profile_policy,
+                                profile_source_system=profile_source_system,
+                                profile_latency_scale=profile_latency_scale,
                             )
                         )
                     except Exception as error:
@@ -1323,6 +1404,12 @@ def require_profile_system(profile: AFDMoEStageProfile, system: str) -> None:
 def run(args: argparse.Namespace) -> dict[str, Any]:
     system = getattr(args, "system", DEFAULT_SYSTEM)
     gpus_per_node = system_gpus_per_node(system)
+    profile_policy = getattr(args, "moe_profile_policy", "exact")
+    profile_source_system = getattr(args, "moe_profile_source_system", None)
+    profile_latency_scale = getattr(args, "moe_profile_latency_scale", None)
+    require_profiled_moe = bool(
+        getattr(args, "require_measured_moe", False) or getattr(args, "require_profiled_moe", False)
+    )
     selected_models = [MODEL_BY_KEY[key] for key in args.models]
     selected_workloads = list(args.workloads)
     selected_totals = tuple(sorted(set(args.total_gpus)))
@@ -1332,6 +1419,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         profile = measured_profile(measured_profile_path)
         if args.require_measured_moe:
             require_profile_system(profile, system)
+        if (
+            profile_policy == "load-interpolate"
+            and profile_source_system is not None
+            and profile_source_system != system
+            and profile_latency_scale is None
+        ):
+            raise ValueError("cross-system MoE load projection requires --moe-profile-latency-scale")
     agg_rows: list[dict[str, Any]] = []
     afd_rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -1368,6 +1462,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 measured_profile_path,
                 system=system,
                 gpus_per_node=gpus_per_node,
+                profile_policy=profile_policy,
+                profile_source_system=profile_source_system,
+                profile_latency_scale=profile_latency_scale,
             )
             new_agg.extend(rows)
             agg_failures.extend(row_failures)
@@ -1384,10 +1481,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 measured_profile_path,
                 system=system,
                 gpus_per_node=gpus_per_node,
+                profile_policy=profile_policy,
+                profile_source_system=profile_source_system,
+                profile_latency_scale=profile_latency_scale,
             )
             new_afd.extend(rows)
             afd_failures.extend(row_failures)
-        if args.require_measured_moe:
+        if require_profiled_moe:
             new_agg = [row for row in new_agg if row["moe_measurement"]["used"]]
             new_afd = [row for row in new_afd if row["moe_measurement"]["used"]]
         agg_rows.extend(new_agg)
@@ -1438,9 +1538,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 sorted(selected_backend_families) if selected_backend_families is not None else "profile-scope"
             ),
             "require_measured_moe": bool(args.require_measured_moe),
+            "require_profiled_moe": require_profiled_moe,
+            "moe_profile_policy": profile_policy,
+            "moe_profile_source_system": profile_source_system,
+            "moe_profile_latency_scale": profile_latency_scale,
             "afd_moe_profile_policy": (
-                "exact model/system/stage/topology/source-batch/MTP/microbatch/layer/precision/backend match; "
-                "generic AIC fallback is explicit when no point matches"
+                "exact full-key lookup, or explicit within-envelope monotone interpolation by physical tokens per "
+                "F rank and microbatch; interpolation never extrapolates and cross-system scaling is explicit"
             ),
             "batch_semantics": "batch_per_a_gpu; a_batch_size_per_worker=batch_per_a_gpu*a_tp",
             "mtp_compute": "verification width q=nextn+1; transformer work=q*L+nextn layer-equivalents",
@@ -1496,13 +1600,46 @@ def parse_args() -> argparse.Namespace:
         help="Optional exact-only measured AFD MoE-stage profile JSON",
     )
     parser.add_argument(
+        "--moe-profile-policy",
+        choices=("exact", "load-interpolate"),
+        default="exact",
+        help="Use exact keys only, or interpolate inside a measured per-F-rank load envelope",
+    )
+    parser.add_argument(
+        "--moe-profile-source-system",
+        help="Measured source system used by load interpolation; defaults to --system",
+    )
+    parser.add_argument(
+        "--moe-profile-latency-scale",
+        type=float,
+        help="Explicit positive latency multiplier for a cross-system load projection",
+    )
+    parser.add_argument(
         "--require-measured-moe",
         action="store_true",
         help="Drop candidates without an exact measured MoE point instead of using generic AIC",
     )
+    parser.add_argument(
+        "--require-profiled-moe",
+        action="store_true",
+        help="Drop candidates without an exact or within-envelope profile-derived MoE timing",
+    )
     args = parser.parse_args()
-    if args.require_measured_moe and args.afd_moe_profile is None:
-        parser.error("--require-measured-moe requires --afd-moe-profile")
+    if (args.require_measured_moe or args.require_profiled_moe) and args.afd_moe_profile is None:
+        parser.error("--require-measured-moe/--require-profiled-moe requires --afd-moe-profile")
+    if args.require_measured_moe and args.moe_profile_policy != "exact":
+        parser.error("--require-measured-moe is exact-only; use --require-profiled-moe for interpolation")
+    if args.moe_profile_policy == "load-interpolate" and args.afd_moe_profile is None:
+        parser.error("--moe-profile-policy load-interpolate requires --afd-moe-profile")
+    if args.moe_profile_latency_scale is not None and args.moe_profile_latency_scale <= 0:
+        parser.error("--moe-profile-latency-scale must be positive")
+    if (
+        args.moe_profile_policy == "load-interpolate"
+        and args.moe_profile_source_system is not None
+        and args.moe_profile_source_system != args.system
+        and args.moe_profile_latency_scale is None
+    ):
+        parser.error("cross-system load interpolation requires --moe-profile-latency-scale")
     try:
         gpus_per_node = system_gpus_per_node(args.system)
     except Exception as error:

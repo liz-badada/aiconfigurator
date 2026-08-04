@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -46,6 +47,24 @@ class AFDMoEStageMeasurement:
     source_commit: str
     source_tree_sha256: str
     source_result: str
+
+
+@dataclass(frozen=True)
+class AFDMoEStageProjection:
+    """Latency interpolated inside one measured per-F-rank load envelope."""
+
+    key: AFDMoEStageKey
+    model_profile: str
+    latency_ms: float
+    evidence: str
+    source_system: str
+    source_topology: str
+    target_load_per_f_rank: float
+    latency_scale: float
+    lower_anchor_load: float
+    upper_anchor_load: float
+    lower_anchor: AFDMoEStageMeasurement
+    upper_anchor: AFDMoEStageMeasurement
 
 
 class AFDMoEStageProfile:
@@ -89,6 +108,117 @@ class AFDMoEStageProfile:
         if measurement is None:
             raise KeyError(f"no exact AFD MoE stage measurement for {key}")
         return measurement
+
+    def project_by_f_rank_load(
+        self,
+        key: AFDMoEStageKey,
+        *,
+        source_system: str,
+        target_load_per_f_rank: float,
+        latency_scale: float = 1.0,
+        source_topology: str | None = None,
+    ) -> AFDMoEStageProjection | None:
+        """Interpolate latency inside one measured topology's load envelope.
+
+        This method never extrapolates and never treats a projection as an
+        exact measurement.  ``latency_scale`` must be supplied by the caller
+        when transferring an envelope between systems.
+        """
+
+        target_load = _finite_float(target_load_per_f_rank, "target_load_per_f_rank", positive=True)
+        scale = _finite_float(latency_scale, "latency_scale", positive=True)
+        groups: dict[str, list[tuple[float, AFDMoEStageMeasurement]]] = {}
+        for entry in self.entries:
+            candidate = entry.key
+            if (
+                candidate.model_path != key.model_path
+                or candidate.system != source_system
+                or candidate.stage != key.stage
+                or candidate.mtp_nextn != key.mtp_nextn
+                or candidate.microbatches != key.microbatches
+                or candidate.moe_layers != key.moe_layers
+                or candidate.moe_precision != key.moe_precision
+                or candidate.moe_backend != key.moe_backend
+                or (source_topology is not None and candidate.topology != source_topology)
+            ):
+                continue
+            groups.setdefault(candidate.topology, []).append((_f_rank_load(candidate), entry))
+
+        eligible: list[tuple[str, list[tuple[float, AFDMoEStageMeasurement]]]] = []
+        for topology, raw_anchors in groups.items():
+            anchors_by_load: dict[float, AFDMoEStageMeasurement] = {}
+            for load, entry in raw_anchors:
+                previous = anchors_by_load.get(load)
+                if previous is None or entry.latency_ms > previous.latency_ms:
+                    anchors_by_load[load] = entry
+            anchors = sorted(anchors_by_load.items())
+            if anchors and anchors[0][0] <= target_load <= anchors[-1][0]:
+                eligible.append((topology, anchors))
+
+        if not eligible:
+            return None
+        if len(eligible) != 1:
+            topologies = sorted(topology for topology, _anchors in eligible)
+            raise ValueError(
+                "multiple measured topologies cover the requested F-rank load; "
+                f"set source_topology explicitly: {topologies}"
+            )
+
+        topology, anchors = eligible[0]
+        monotone: list[tuple[float, AFDMoEStageMeasurement, float]] = []
+        latency_floor = 0.0
+        for load, entry in anchors:
+            latency_floor = max(latency_floor, entry.latency_ms)
+            monotone.append((load, entry, latency_floor))
+
+        lower_load, lower_entry, lower_latency = monotone[0]
+        upper_load, upper_entry, upper_latency = monotone[-1]
+        for index, anchor in enumerate(monotone):
+            load, entry, latency = anchor
+            if math.isclose(target_load, load, rel_tol=1e-12, abs_tol=1e-12):
+                lower_load = upper_load = load
+                lower_entry = upper_entry = entry
+                lower_latency = upper_latency = latency
+                break
+            if load > target_load:
+                lower_load, lower_entry, lower_latency = monotone[index - 1]
+                upper_load, upper_entry, upper_latency = anchor
+                break
+
+        if math.isclose(lower_load, upper_load):
+            interpolated = lower_latency
+        else:
+            fraction = (target_load - lower_load) / (upper_load - lower_load)
+            interpolated = lower_latency + fraction * (upper_latency - lower_latency)
+        return AFDMoEStageProjection(
+            key=key,
+            model_profile=lower_entry.model_profile,
+            latency_ms=interpolated * scale,
+            evidence="within-envelope monotone linear interpolation by physical tokens per F rank per microbatch",
+            source_system=source_system,
+            source_topology=topology,
+            target_load_per_f_rank=target_load,
+            latency_scale=scale,
+            lower_anchor_load=lower_load,
+            upper_anchor_load=upper_load,
+            lower_anchor=lower_entry,
+            upper_anchor=upper_entry,
+        )
+
+
+_AFD_TOPOLOGY = re.compile(r"^(?P<a>[1-9][0-9]*)A(?P<f>[1-9][0-9]*)F$")
+
+
+def _f_rank_load(key: AFDMoEStageKey) -> float:
+    """Return physical token load per F rank and microbatch for a profile key."""
+
+    load = key.logical_batch_per_source_rank * (key.mtp_nextn + 1) / key.microbatches
+    if key.stage == "agg":
+        return load
+    match = _AFD_TOPOLOGY.fullmatch(key.topology)
+    if match is None:
+        raise ValueError(f"AFD profile topology must use '<A>A<F>F': {key.topology!r}")
+    return load * int(match.group("a")) / int(match.group("f"))
 
 
 def _object(value: Any, field: str) -> dict[str, Any]:
@@ -194,4 +324,5 @@ __all__ = [
     "AFDMoEStageKey",
     "AFDMoEStageMeasurement",
     "AFDMoEStageProfile",
+    "AFDMoEStageProjection",
 ]

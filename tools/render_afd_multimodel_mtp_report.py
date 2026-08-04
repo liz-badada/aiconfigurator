@@ -373,12 +373,18 @@ def primary_mtp(model: dict[str, Any]) -> dict[str, Any]:
 
 
 def is_megamoe_backend(value: str) -> bool:
-    return value in {"megamoe", "measured-megamoe"}
+    return value in {"megamoe", "measured-megamoe", "projected-megamoe"}
 
 
 def backend_display_name(value: str) -> str:
     if value == "measured-megamoe":
         return "MegaMoE (exact measured profile)"
+    if value == "projected-megamoe":
+        return "MegaMoE (measured-load projection)"
+    if value == "measured-deepep-deepgemm":
+        return "DeepEP+DeepGEMM (exact measured profile)"
+    if value == "projected-deepep-deepgemm":
+        return "DeepEP+DeepGEMM (measured-load projection)"
     if value == "megamoe":
         return "MegaMoE"
     return value or "default"
@@ -388,6 +394,14 @@ def all_arms_use_exact_measured_moe(arm_contracts: dict[str, dict[str, str]]) ->
     return bool(arm_contracts) and all(
         contract.get("moe_backend") == "measured-megamoe"
         and contract.get("moe_time_source") == "exact-measured-profile"
+        for contract in arm_contracts.values()
+    )
+
+
+def all_arms_use_load_projected_moe(arm_contracts: dict[str, dict[str, str]]) -> bool:
+    return bool(arm_contracts) and all(
+        contract.get("moe_backend", "").startswith("projected-")
+        and contract.get("moe_time_source") == "load-interpolated-profile"
         for contract in arm_contracts.values()
     )
 
@@ -894,15 +908,22 @@ def contract_section(
     profile = primary_profile(model)
     mtp = primary_mtp(model)
     measured_moe = all_arms_use_exact_measured_moe(arm_contracts)
+    projected_moe = all_arms_use_load_projected_moe(arm_contracts)
     exact = (
         "exact measured stage profile"
         if measured_moe
+        else "within-envelope measured-load projection"
+        if projected_moe
         else "same-shape data"
         if profile["exact_shape_data"]
         else "projected / transferred utilization"
     )
     moe_evidence = (
-        "Exact point keys and source provenance are listed in section 4." if measured_moe else profile["evidence"]
+        "Exact point keys and source provenance are listed in section 4."
+        if measured_moe
+        else "Target load, enclosing measured anchors, scale, and provenance are listed in section 4."
+        if projected_moe
+        else profile["evidence"]
     )
     section = (
         "<h2>1. Compared contract</h2>"
@@ -962,7 +983,7 @@ def contract_section(
     if is_megamoe_backend(arm_contracts["AGG"]["moe_backend"]):
         section += (
             '<div class="callout ok"><strong>Requested MegaMoE control.</strong> AGG, AGG + MTP, '
-            "AGG + AFD, and AGG + AFD + MTP all query the same model-specific measured MegaMoE module. "
+            "AGG + AFD, and AGG + AFD + MTP all use the same model-specific MegaMoE timing policy. "
             "The AFD ratios therefore do not contain a MoE-backend substitution.</div>"
         )
     else:
@@ -975,8 +996,13 @@ def contract_section(
         model_reference = moe_reference["models"].get(model["model_path"])
         if model_reference is not None:
             reference_system = ", ".join(moe_reference["systems"])
+            reference_use = (
+                "These anchors drive the explicitly labeled load projection in this sweep."
+                if projected_moe
+                else f"They are shown as evidence only and are not injected into this {esc(contract['system'])} sweep."
+            )
             section += (
-                '<div class="callout warn"><strong>Separate silicon MoE evidence.</strong> '
+                '<div class="callout warn"><strong>Silicon MoE evidence boundary.</strong> '
                 f"{model_reference['entries']} qualified {esc(reference_system)} exact-stage points exist for this model: "
                 f"AGG latency {fmt_range(model_reference['agg_latency_ms'], suffix=' ms')}; "
                 f"AGG DeepEP+DeepGEMM latency {fmt_range(model_reference['deepep_agg_latency_ms'], suffix=' ms')}; "
@@ -985,7 +1011,7 @@ def contract_section(
                 f"{fmt_range(model_reference['deepep_afd_latency_ms'], suffix=' ms')}; "
                 f"colocated DeepEP/MegaMoE conservative lower bound "
                 f"{fmt_range(model_reference['matched_speedup_lower_bound'], suffix='×')}. "
-                f"They are shown as evidence only and are not injected into this {esc(contract['system'])} sweep.</div>"
+                f"{reference_use}</div>"
             )
     return section
 
@@ -1194,51 +1220,64 @@ def render_model(
         css="wide",
     )
 
-    measured_rows = []
+    profiled_rows = []
     for category, row in module_records:
         measurement = row.get("moe_measurement", {})
         if not measurement.get("used"):
             continue
         key = measurement["key"]
-        measured_rows.append(
+        timing_source = measurement.get("timing_source", "exact-measured-profile")
+        anchors = measurement.get("anchors", [])
+        anchor_loads = "exact key"
+        source_commits = str(measurement.get("source_commit", ""))[:12]
+        if anchors:
+            anchor_loads = " → ".join(fmt(value["load_per_f_rank"], 3) for value in anchors)
+            source_commits = ", ".join(
+                sorted({str(value.get("source_commit", ""))[:12] for value in anchors if value.get("source_commit")})
+            )
+        profiled_rows.append(
             [
                 esc(category),
+                esc(timing_source),
                 esc(key["stage"]),
                 esc(key["topology"]),
+                esc(measurement.get("source_topology", key["topology"])),
                 key["logical_batch_per_source_rank"],
+                fmt(measurement.get("target_load_per_f_rank"), 3),
                 key["mtp_nextn"],
                 key["microbatches"],
-                fmt(measurement["measured_latency_ms"], 3),
+                fmt(measurement.get("measured_latency_ms", measurement.get("projected_latency_ms")), 3),
                 fmt(measurement.get("generic_residual_ms", 0.0), 3),
-                fmt(measurement.get("matched_speedup"), 3),
-                fmt(measurement.get("matched_speedup_lower_bound"), 3),
-                f'<span class="mono">{esc(str(measurement.get("source_commit", ""))[:12])}</span>',
+                esc(anchor_loads),
+                f'<span class="mono">{esc(source_commits)}</span>',
             ]
         )
-    if measured_rows:
-        body += "<h3>Exact measured MoE-stage inputs for the selected 72-GPU points</h3>"
+    if profiled_rows:
+        body += "<h3>Profile-derived MoE-stage inputs for the selected 72-GPU points</h3>"
         body += table(
             [
                 "Case",
+                "Timing source",
                 "Stage",
-                "Topology",
+                "Target topology",
+                "Measured topology",
                 "Logical batch / source rank",
+                "Target physical tokens / F rank / microbatch",
                 "MTP nextN",
                 "Microbatches",
-                "Measured stage ms",
+                "Injected stage ms",
                 "AIC residual ms",
-                "Matched speedup",
-                "Conservative lower bound",
-                "Source commit",
+                "Enclosing measured loads",
+                "Anchor commit(s)",
             ],
-            measured_rows,
+            profiled_rows,
             css="wide",
         )
         body += (
-            '<p class="small muted">Measured stage ms is the complete MegaMoE boundary selected by the exact '
-            "model/system/topology/batch/MTP/microbatch key. AIC residual contains only decoder work outside that "
-            "measured boundary, such as non-MoE layers. The speedup columns compare the colocated complete MoE-stage "
-            "paths and are evidence for the kernel measurement; they are not the end-to-end AFD/AGG ratio.</p>"
+            '<p class="small muted">Exact rows use one complete measured MoE-stage key. Projected rows linearly '
+            "interpolate between the displayed physical-load anchors after enforcing a non-decreasing latency envelope; "
+            "no extrapolation is allowed. AIC residual contains only decoder work outside the measured MoE boundary. "
+            "Injected stage time is not an end-to-end measurement.</p>"
         )
 
     body += "<h2>5. Throughput–latency Pareto front</h2>"
@@ -1338,7 +1377,7 @@ def render_model(
 
     model_rows = [row for row in payload["rows"] if row["model"] == model["key"]]
     primary_rows = [row for row in model_rows if row["precision_profile"] == profile["key"]]
-    measured_primary_rows = [row for row in primary_rows if row.get("moe_measurement", {}).get("used")]
+    profiled_primary_rows = [row for row in primary_rows if row.get("moe_measurement", {}).get("used")]
     model_failures = [row for row in payload["failures"] if row.get("model") == model["key"]]
     failure_counts = Counter(failure["error"].split(":", 1)[0] for failure in model_failures)
     body += "<h2>7. Sweep coverage and confidence</h2>"
@@ -1351,11 +1390,13 @@ def render_model(
             ["Top rejection classes", esc(", ".join(f"{key}={value}" for key, value in failure_counts.most_common(4)))],
             ["Primary attention evidence", esc(model["attention_evidence"])],
             ["Primary MoE evidence", esc(profile["evidence"])],
-            ["Primary rows using exact measured MoE", f"{len(measured_primary_rows):,} / {len(primary_rows):,}"],
+            ["Primary rows using profile-derived MoE", f"{len(profiled_primary_rows):,} / {len(primary_rows):,}"],
         ],
     )
     if all_arms_use_exact_measured_moe(arm_contracts):
         body += '<div class="callout ok"><strong>MoE boundary is exact measured data in all four arms.</strong> Attention, dense GEMM, router work outside the measured stage, communication, and uncovered MTP shapes may still come from AIC HYBRID estimates. End-to-end throughput is therefore a measured-MoE hybrid simulation, not an end-to-end silicon measurement.</div>'
+    elif all_arms_use_load_projected_moe(arm_contracts):
+        body += '<div class="callout warn"><strong>MoE boundary is a measured-load projection in all four arms.</strong> Every selected point lies inside its measured physical-load envelope; no latency is extrapolated. Cross-system scale and anchor provenance are explicit above. Attention and work outside the MoE-stage boundary still come from AIC HYBRID estimates.</div>'
     elif not profile["exact_shape_data"]:
         body += '<div class="callout warn"><strong>Projection warning.</strong> This primary profile lacks a native target-shape silicon row. Treat absolute throughput and the A:F optimum as a calibrated hypothesis until measured on the target kernel.</div>'
     else:
@@ -1400,6 +1441,7 @@ def render_index(
     moe_reference: dict[str, Any] | None,
     mocker_summaries: list[dict[str, Any]],
 ) -> str:
+    uses_projection = any(all_arms_use_load_projected_moe(summary["arm_backend_contracts"]) for summary in summaries)
     body = model_navigation(payload)
     body += (
         '<div class="callout"><strong>Question answered:</strong> for each fixed 16/24/36/48/72-GPU pool, what are '
@@ -1420,7 +1462,13 @@ def render_index(
                 "External exact MoE-stage reference",
                 esc(", ".join(moe_reference["systems"]) if moe_reference else "not supplied"),
                 "Matched MegaMoE and DeepEP+DeepGEMM latency/correctness/stability evidence",
-                '<span class="neutral">no; different system</span>' if moe_reference else "—",
+                (
+                    '<span class="good">yes; within-envelope load projection</span>'
+                    if moe_reference and uses_projection
+                    else '<span class="neutral">no; different system</span>'
+                    if moe_reference
+                    else "—"
+                ),
             ],
             [
                 "Dynamo Mocker replay",
@@ -1477,10 +1525,17 @@ def render_index(
                     fmt_range(reference["matched_speedup_lower_bound"], suffix="×"),
                 ]
             )
+        use_note = (
+            "They are used only through within-envelope physical-load interpolation with the explicit cross-system "
+            f"latency scale {fmt(payload['contract'].get('moe_profile_latency_scale'), 3)}; they are not renamed as "
+            f"{esc(payload['contract']['system'])} measurements."
+            if uses_projection
+            else f"They validate the backend implementation but are not used as {esc(payload['contract']['system'])} latency."
+        )
         body += (
             f'<div class="callout warn"><strong>System separation.</strong> The {moe_reference["entries"]} points '
             f"below are qualified {esc(', '.join(moe_reference['systems']))} silicon measurements from the {source}. "
-            f"They validate the backend implementation but are not used as {esc(payload['contract']['system'])} latency.</div>"
+            f"{use_note}</div>"
         )
         body += table(
             [
@@ -1568,9 +1623,16 @@ def render_index(
         if summary["arm_backend_contracts"]["AGG"]["moe_backend"] == "measured-megamoe"
     ]
     measured_text = ", ".join(esc(value) for value in measured_models) or "none"
+    projected_models = [
+        summary["label"]
+        for summary in summaries
+        if summary["arm_backend_contracts"]["AGG"]["moe_backend"].startswith("projected-")
+    ]
+    projected_text = ", ".join(esc(value) for value in projected_models) or "none"
     body += (
         '<div class="callout"><strong>Backend policy.</strong> Exact measured MegaMoE is used in all four arms '
-        f"for: {measured_text}. Every model is required to have one identical framework, MoE backend, kernel, "
+        f"for: {measured_text}. Measured-load projection is used in all four arms for: {projected_text}. "
+        "Every model is required to have one identical framework, MoE backend, kernel, "
         "precision, and attention backend across AGG, AGG + AFD, AGG + MTP, and AGG + AFD + MTP.</div>"
     )
     body += "<h3>Four-arm backend equality audit</h3>"
