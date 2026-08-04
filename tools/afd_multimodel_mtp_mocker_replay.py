@@ -20,6 +20,14 @@ DEFAULT_WORKLOADS = ("8k", "16k")
 CONTEXT_LENGTHS = {"8k": 8192, "16k": 16384}
 
 
+def report_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the flattened Mocker summary across Dynamo report schemas."""
+    summary = payload.get("summary", payload)
+    if not isinstance(summary, dict):
+        raise TypeError("Dynamo Mocker report summary must be an object")
+    return summary
+
+
 def equal_conditional_rate(nextn: int, accepted_drafts: float) -> float:
     """Find a constant conditional accept rate with the requested mean progress."""
     low, high = 0.0, 1.0
@@ -176,7 +184,7 @@ def replay_case(
     )
     if completed.returncode:
         raise RuntimeError(f"Mocker failed for {case_id}:\n{completed.stdout[-8000:]}")
-    result = json.loads(report.read_text(encoding="utf-8"))
+    result = report_summary(json.loads(report.read_text(encoding="utf-8")))
     expected_tpot_ms = float(row["effective_tpot_ms"])
     expected_output_tps = float(row["output_tokens_s"])
     finite_wave_efficiency = result["output_throughput_tok_s"] / expected_output_tps

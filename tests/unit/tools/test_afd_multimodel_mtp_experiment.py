@@ -15,6 +15,7 @@ pytestmark = pytest.mark.unit
 
 EXPERIMENT = Path(__file__).resolve().parents[3] / "tools" / "afd_multimodel_mtp_experiment.py"
 RENDERER = Path(__file__).resolve().parents[3] / "tools" / "render_afd_multimodel_mtp_report.py"
+MOCKER_REPLAY = Path(__file__).resolve().parents[3] / "tools" / "afd_multimodel_mtp_mocker_replay.py"
 
 
 @pytest.fixture(scope="module")
@@ -29,6 +30,16 @@ def experiment_module():
 @pytest.fixture(scope="module")
 def renderer_module():
     spec = importlib.util.spec_from_file_location("render_afd_multimodel_mtp_report", RENDERER)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def mocker_replay_module(renderer_module):
+    del renderer_module
+    spec = importlib.util.spec_from_file_location("afd_multimodel_mtp_mocker_replay", MOCKER_REPLAY)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -133,6 +144,56 @@ def test_renderer_labels_exact_megamoe_backend(renderer_module):
     assert "MegaMoE (exact measured profile)" in renderer_module.compact_backend_contract(contract)
 
 
+def test_renderer_selects_the_only_profile_present_in_a_filtered_sweep(renderer_module, tmp_path):
+    contract = {
+        "system": "gb200",
+        "backend": "sglang",
+        "database_mode": "HYBRID",
+        "gpus_per_node": 4,
+        "pipeline_model": "conservative",
+        "decode_stride": 128,
+        "batch_semantics": "test",
+        "mtp_compute": "test",
+        "mtp_progress": "test",
+    }
+    model = {
+        "key": "model",
+        "precision_profiles": [
+            {"key": "megamoe", "primary": True},
+            {"key": "trtllm", "primary": False},
+        ],
+    }
+    row = {
+        "model": "model",
+        "workload": "8k",
+        "scenario": "no_mtp",
+        "precision_profile": "trtllm",
+        "system_kind": "agg",
+        "total_gpus": 16,
+        "world": 16,
+        "tp": 1,
+        "local_batch": 1,
+    }
+    path = tmp_path / "filtered.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "aic.afd-fixed-pool-sweep.v3",
+                "contract": contract,
+                "code": {"commit": "test"},
+                "models": [model],
+                "agg_rows": [row],
+                "afd_rows": [],
+                "failures": [],
+            }
+        )
+    )
+
+    payload = renderer_module.load_payload([path])
+
+    assert renderer_module.primary_profile(payload["models"]["model"])["key"] == "trtllm"
+
+
 def test_renderer_requires_exact_measured_moe_on_every_arm(renderer_module):
     measured = {
         "moe_backend": "measured-megamoe",
@@ -221,6 +282,13 @@ def test_renderer_summarizes_mocker_accounting_without_case_artifacts(renderer_m
     assert summary["no_mtp_max_abs_tpot_error_pct"] == 0.0
     assert summary["mtp_max_abs_tpot_error_pct"] == 0.2
     assert summary["mtp_finite_efficiency"] == [0.91, 0.91]
+
+
+def test_mocker_replay_accepts_current_and_legacy_report_shapes(mocker_replay_module):
+    summary = {"completed_requests": 8, "output_throughput_tok_s": 100.0}
+
+    assert mocker_replay_module.report_summary({"summary": summary}) is summary
+    assert mocker_replay_module.report_summary(summary) is summary
 
 
 def test_renderer_line_charts_use_nvidia_palette_without_point_labels(renderer_module):

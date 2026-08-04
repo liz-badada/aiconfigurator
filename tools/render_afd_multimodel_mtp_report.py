@@ -218,6 +218,16 @@ def load_payload(paths: list[Path]) -> dict[str, Any]:
         for field in invariant_fields:
             if contract[field] != contracts[0][field]:
                 raise ValueError(f"inconsistent sweep contract: {field}")
+    for model_key, model in models.items():
+        active_profiles = {str(row["precision_profile"]) for row in rows.values() if row["model"] == model_key}
+        if len(active_profiles) != 1:
+            continue
+        active_profile = next(iter(active_profiles))
+        known_profiles = {str(profile["key"]) for profile in model["precision_profiles"]}
+        if active_profile not in known_profiles:
+            raise ValueError(f"unknown active precision profile for {model_key}: {active_profile}")
+        for profile in model["precision_profiles"]:
+            profile["primary"] = profile["key"] == active_profile
     return {
         "schema": "aic.afd-fixed-pool-report-input.v1",
         "models": models,
