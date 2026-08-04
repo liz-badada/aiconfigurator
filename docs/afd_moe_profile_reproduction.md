@@ -197,6 +197,20 @@ from the qualified B200 profile. In that case the report places the B200
 latency and speedup ranges in a separate evidence table and explicitly records
 that zero B200 points were injected into the GB200 system simulation.
 
+Render matched-backend ratio curves from independently generated sweeps. Each
+input keeps one backend fixed across AGG, AFD, AGG+MTP, and AFD+MTP:
+
+```bash
+uv run python tools/render_afd_backend_comparison.py \
+  --sweep "Generic TRTLLM=/path/to/generic.json" \
+  --sweep "MegaMoE=/path/to/megamoe.json" \
+  --sweep "DeepEP+DeepGEMM=/path/to/deepep.json" \
+  --output /path/to/backend_comparison.html
+```
+
+Missing points remain blank when either arm falls outside the measured-load
+envelope. The renderer does not extrapolate or replace the requested backend.
+
 ## 5. Optional Dynamo Mocker replay
 
 Mocker does not predict kernel time. It replays selected AIC service points to
