@@ -18,6 +18,13 @@ def parse_sweep(value: str) -> tuple[str, Path]:
     return label.strip(), Path(raw_path).expanduser()
 
 
+def parse_detail_report(value: str) -> tuple[str, str]:
+    label, separator, link = value.partition("=")
+    if not separator or not label.strip() or not link.strip():
+        raise argparse.ArgumentTypeError("detail report must use LABEL=relative/path/index.html")
+    return label.strip(), link.strip()
+
+
 def load_sweeps(specs: list[tuple[str, Path]]) -> list[tuple[str, dict]]:
     labels = [label for label, _ in specs]
     if len(labels) != len(set(labels)):
@@ -89,7 +96,7 @@ def backend_contract_rows(sweeps: list[tuple[str, dict]], model_key: str) -> lis
     return rows
 
 
-def render(sweeps: list[tuple[str, dict]], speed_floor: float) -> str:
+def render(sweeps: list[tuple[str, dict]], speed_floor: float, detail_reports: dict[str, str] | None = None) -> str:
     for index, (label, _) in enumerate(sweeps):
         report.COLORS[label] = PALETTE[index % len(PALETTE)]
 
@@ -109,7 +116,17 @@ def render(sweeps: list[tuple[str, dict]], speed_floor: float) -> str:
                 all_series.extend(value for points in series.values() for _, value in points)
     common_y_max = max(report.nice_max(max(all_series, default=1.0) * 1.05), 1.2)
 
-    body = (
+    body = ""
+    if detail_reports:
+        body += (
+            '<div class="nav">'
+            + "".join(
+                f'<a href="{report.esc(link)}">{report.esc(label)} detailed report</a>'
+                for label, link in detail_reports.items()
+            )
+            + "</div>"
+        )
+    body += (
         '<div class="callout"><strong>Comparison rule.</strong> Each line compares AGG+AFD against AGG while '
         "holding the named MoE backend fixed in all four arms. A point is shown only when both arms satisfy the "
         f"{speed_floor:g} committed tokens/s/user floor and lie inside the available measured-load envelope.</div>"
@@ -180,6 +197,13 @@ def render(sweeps: list[tuple[str, dict]], speed_floor: float) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sweep", action="append", type=parse_sweep, required=True, metavar="LABEL=PATH")
+    parser.add_argument(
+        "--detail-report",
+        action="append",
+        type=parse_detail_report,
+        default=[],
+        metavar="LABEL=RELATIVE_INDEX",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--speed-floor", type=float, default=30.0)
     args = parser.parse_args()
@@ -193,9 +217,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     sweeps = load_sweeps(args.sweep)
+    detail_reports = dict(args.detail_report)
+    unknown_details = detail_reports.keys() - {label for label, _ in sweeps}
+    if unknown_details:
+        raise ValueError(f"detail reports have no matching sweep: {', '.join(sorted(unknown_details))}")
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(render(sweeps, args.speed_floor), encoding="utf-8")
+    output.write_text(render(sweeps, args.speed_floor, detail_reports), encoding="utf-8")
     print(output)
     return 0
 

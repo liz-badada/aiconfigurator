@@ -494,6 +494,11 @@ def test_backend_renderer_parses_labeled_sweeps(backend_renderer_module):
     with pytest.raises(backend_renderer_module.argparse.ArgumentTypeError, match=r"LABEL=/path/to/sweep\.json"):
         backend_renderer_module.parse_sweep("/tmp/sweep.json")
 
+    assert backend_renderer_module.parse_detail_report("MegaMoE=megamoe/index.html") == (
+        "MegaMoE",
+        "megamoe/index.html",
+    )
+
 
 def test_renderer_pareto_charts_do_not_label_points(renderer_module):
     svg = renderer_module.scatter_svg(
