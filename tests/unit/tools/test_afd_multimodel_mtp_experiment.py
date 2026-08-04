@@ -148,12 +148,18 @@ def test_renderer_requires_exact_measured_moe_on_every_arm(renderer_module):
 
 def test_renderer_summarizes_external_moe_reference_without_calibrating(renderer_module, tmp_path):
     entries = []
-    for stage, topology, microbatches, latency in (("agg", "ep8", 1, 5.0), ("afd", "4A4F", 2, 8.0)):
+    for backend, stage, topology, microbatches, latency in (
+        ("megamoe", "agg", "ep8", 1, 5.0),
+        ("megamoe", "afd", "4A4F", 2, 8.0),
+        ("deepep_deepgemm", "agg", "ep8", 1, 9.0),
+        ("deepep_deepgemm", "afd", "4A4F", 2, 12.0),
+    ):
         entries.append(
             {
                 "model_path": "Model/Test",
                 "system": "b200_sxm",
                 "stage": stage,
+                "moe_backend": backend,
                 "topology": topology,
                 "logical_batch_per_source_rank": 96,
                 "mtp_nextn": 3,
@@ -164,15 +170,17 @@ def test_renderer_summarizes_external_moe_reference_without_calibrating(renderer
             }
         )
     path = tmp_path / "profile.json"
-    path.write_text(json.dumps({"schema": "aic.afd-moe-stage-profile.v1", "entries": entries}))
+    path.write_text(json.dumps({"schema": "aic.afd-moe-stage-profile.v2", "entries": entries}))
 
     reference = renderer_module.load_moe_reference(path, "https://example.test/reference")
 
     assert reference["systems"] == ["b200_sxm"]
-    assert reference["entries"] == 2
+    assert reference["entries"] == 4
     assert reference["path"] is None
     assert reference["models"]["Model/Test"]["agg_latency_ms"] == [5.0, 5.0]
     assert reference["models"]["Model/Test"]["afd_latency_ms"] == [8.0, 8.0]
+    assert reference["models"]["Model/Test"]["deepep_agg_latency_ms"] == [9.0, 9.0]
+    assert reference["models"]["Model/Test"]["deepep_afd_latency_ms"] == [12.0, 12.0]
 
 
 def test_renderer_summarizes_mocker_accounting_without_case_artifacts(renderer_module, tmp_path):

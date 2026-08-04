@@ -970,7 +970,9 @@ def contract_section(
                 f"{model_reference['entries']} qualified {esc(reference_system)} exact-stage points exist for this model: "
                 f"AGG latency {fmt_range(model_reference['agg_latency_ms'], suffix=' ms')}; "
                 f"AGG DeepEP+DeepGEMM latency {fmt_range(model_reference['deepep_agg_latency_ms'], suffix=' ms')}; "
-                f"AFD F-stage latency {fmt_range(model_reference['afd_latency_ms'], suffix=' ms')}; "
+                f"AFD MegaMoE F-stage latency {fmt_range(model_reference['afd_latency_ms'], suffix=' ms')}; "
+                f"AFD DeepEP+DeepGEMM F-stage latency "
+                f"{fmt_range(model_reference['deepep_afd_latency_ms'], suffix=' ms')}; "
                 f"colocated DeepEP/MegaMoE conservative lower bound "
                 f"{fmt_range(model_reference['matched_speedup_lower_bound'], suffix='×')}. "
                 f"They are shown as evidence only and are not injected into this {esc(contract['system'])} sweep.</div>"
@@ -1435,7 +1437,16 @@ def render_index(
             reference = moe_reference["models"].get(model_path)
             if reference is None:
                 reference_rows.append(
-                    [f'<a href="{summary["model"]}.html">{esc(summary["label"])}</a>', "—", "—", "—", "—", "—", "—"]
+                    [
+                        f'<a href="{summary["model"]}.html">{esc(summary["label"])}</a>',
+                        "—",
+                        "—",
+                        "—",
+                        "—",
+                        "—",
+                        "—",
+                        "—",
+                    ]
                 )
                 continue
             topology = ", ".join(reference["afd_topologies"])
@@ -1452,6 +1463,7 @@ def render_index(
                     fmt_range(reference["agg_latency_ms"], suffix=" ms"),
                     fmt_range(reference["deepep_agg_latency_ms"], suffix=" ms"),
                     fmt_range(reference["afd_latency_ms"], suffix=" ms"),
+                    fmt_range(reference["deepep_afd_latency_ms"], suffix=" ms"),
                     fmt_range(reference["matched_speedup_lower_bound"], suffix="×"),
                 ]
             )
@@ -1467,7 +1479,8 @@ def render_index(
                 "Measured grid",
                 "AGG MegaMoE stage latency",
                 "AGG DeepEP+DeepGEMM stage latency",
-                "AFD F-stage latency",
+                "AFD MegaMoE F-stage latency",
+                "AFD DeepEP+DeepGEMM F-stage latency",
                 "DeepEP/MegaMoE conservative bound",
             ],
             reference_rows,
