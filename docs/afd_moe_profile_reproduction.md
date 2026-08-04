@@ -25,9 +25,14 @@ The current colocated MegaMoE path exports
 `moe_precision=w4a8_mxfp4_mxfp8` (E2M1 plus UE8M0 block-32 weights and E4M3
 activations). It must not be used to calibrate an `nvfp4` candidate.
 
-The measured profile can be loaded to audit its schema and provenance. A GB200
-sweep rejects a B200 profile by design; the same matrix must be measured on
-GB200 with `system=gb200` to produce a target-system profile.
+The measured profile can be loaded to audit its schema and provenance. Select
+the simulation hardware with `--system`; its node width comes from the AIC
+system specification. A GB200 sweep rejects a B200 profile by design, so a
+GB200 measured-only run requires a profile whose entries use `system=gb200`.
+The topology must match as well. For example, the current single-node B200
+`4A4F` and `2A6F` split measurements are evidence only for a `b200_sxm` AFD
+sweep because that AIC system has 8 GPUs per node and therefore starts at an
+`8A8F` service unit. Its colocated `ep8` entries remain exact AGG matches.
 
 For AGG, the measured source-rank batch is
 `agg_local_batch / attention_tp`, because `agg_local_batch` is per attention-DP
@@ -69,6 +74,7 @@ Generic AIC SGLang/FlashInfer/TensorRT-LLM MoE control:
 ```bash
 uv run python tools/afd_multimodel_mtp_experiment.py \
   --output /path/to/generic_sweep.json \
+  --system gb200 \
   --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
   --workloads 8k 16k \
   --total-gpus 16 24 36 48 72 \
@@ -82,6 +88,7 @@ a key is absent:
 ```bash
 uv run python tools/afd_multimodel_mtp_experiment.py \
   --output /path/to/prefer_measured_sweep.json \
+  --system gb200 \
   --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
   --workloads 8k 16k \
   --total-gpus 16 24 36 48 72 \
@@ -96,6 +103,7 @@ an exact point:
 ```bash
 uv run python tools/afd_multimodel_mtp_experiment.py \
   --output /path/to/measured_only_sweep.json \
+  --system gb200 \
   --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
   --workloads 8k 16k \
   --total-gpus 16 24 36 48 72 \
@@ -113,11 +121,13 @@ measured-only policy drops those missing arms instead of substituting another
 backend.
 
 The values passed to `--total-gpus` are fixed comparison-pool sizes. For AFD,
-the sweep independently evaluates every node-aligned service-unit size from 8
-GPUs through the largest selected pool, then the report packs identical units
-into each fixed pool and charges any idle remainder. This is why an exact
-`4A4F` measurement can participate in a 16/24/36/48/72-GPU comparison. AGG is
-optimized directly at each fixed pool size, including all valid worker sizes.
+the sweep independently evaluates every node-aligned service-unit size from
+two nodes through the largest selected pool, then the report packs identical
+units into each fixed pool and charges any idle remainder. On `gb200`, whose
+system specification has 4 GPUs per node, an exact `4A4F` measurement can
+therefore participate in a 16/24/36/48/72-GPU comparison. On `b200_sxm`, whose
+node width is 8, the smallest AFD topology is `8A8F`. AGG is optimized directly
+at each fixed pool size, including all valid node-aligned worker sizes.
 
 Each row records `moe_measurement.used`, the exact lookup key, measured
 latency, generic residual, source commit/tree hash, and backend contract. The
