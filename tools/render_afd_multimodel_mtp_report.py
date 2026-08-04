@@ -862,9 +862,17 @@ def ratio_series(winners: dict[tuple, dict], workload: str) -> dict[str, list[tu
     scenarios = sorted({key[2] for key in winners})
     no_mtp = "no_mtp"
     mtp = next(name for name in scenarios if name != no_mtp)
+
+    def available(scenario: str) -> list[tuple[float, float]]:
+        return [
+            (total, ratio)
+            for total in TOTAL_GPU_GRID
+            if (ratio := winners[(workload, total, scenario)]["ratio"]) is not None
+        ]
+
     return {
-        "No MTP": [(total, winners[(workload, total, no_mtp)]["ratio"]) for total in TOTAL_GPU_GRID],
-        "With MTP": [(total, winners[(workload, total, mtp)]["ratio"]) for total in TOTAL_GPU_GRID],
+        "No MTP": available(no_mtp),
+        "With MTP": available(mtp),
     }
 
 
@@ -1084,7 +1092,7 @@ def render_model(
             ),
         )
         ratios = ratio_series(winners, workload)
-        ratio_max = nice_max(max(value for points in ratios.values() for _, value in points) * 1.05)
+        ratio_max = nice_max(max((value for points in ratios.values() for _, value in points), default=1.0) * 1.05)
         body += figure(
             line_svg(
                 ratios,

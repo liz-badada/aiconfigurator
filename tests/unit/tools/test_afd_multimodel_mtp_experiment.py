@@ -462,6 +462,18 @@ def test_renderer_line_charts_use_nvidia_palette_without_point_labels(renderer_m
     assert 'class="value-label"' not in svg
 
 
+def test_renderer_ratio_series_omits_unavailable_pairs(renderer_module):
+    winners = {}
+    for total in renderer_module.TOTAL_GPU_GRID:
+        winners[("8k", total, "no_mtp")] = {"ratio": None if total == 16 else 1.1}
+        winners[("8k", total, "mtp")] = {"ratio": None}
+
+    series = renderer_module.ratio_series(winners, "8k")
+
+    assert series["No MTP"] == [(total, 1.1) for total in renderer_module.TOTAL_GPU_GRID if total != 16]
+    assert series["With MTP"] == []
+
+
 def test_renderer_pareto_charts_do_not_label_points(renderer_module):
     svg = renderer_module.scatter_svg(
         {"AGG": [(10.0, 120.0)], "AGG + AFD": [(8.0, 150.0)]},
