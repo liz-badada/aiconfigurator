@@ -55,6 +55,11 @@ def test_afd_service_units_stop_at_largest_selected_pool(experiment_module):
     assert experiment_module.afd_service_unit_grid(()) == ()
 
 
+def test_b200_service_units_use_system_node_width_and_charge_remainder(experiment_module):
+    assert experiment_module.system_gpus_per_node("b200_sxm") == 8
+    assert experiment_module.afd_service_unit_grid((16, 24, 36), 8) == (16, 24, 32)
+
+
 def test_measured_only_rejects_a_profile_for_another_system(experiment_module):
     profile = SimpleNamespace(entries=(SimpleNamespace(key=SimpleNamespace(system="b200_sxm")),))
 
@@ -130,6 +135,41 @@ def test_run_sweeps_fixed_agg_pools_and_all_fitting_afd_units(experiment_module,
     assert agg_sizes == [16, 24, 16, 24]
     assert afd_sizes == [8, 12, 16, 20, 24] * 2
     assert payload["contract"]["afd_service_unit_gpu_grid"] == [8, 12, 16, 20, 24]
+
+
+def test_run_uses_selected_system_topology(experiment_module, monkeypatch, tmp_path):
+    agg_calls = []
+    afd_calls = []
+
+    def fake_agg(*args, **kwargs):
+        agg_calls.append((args[4], kwargs["system"], kwargs["gpus_per_node"]))
+        return [], []
+
+    def fake_afd(*args, **kwargs):
+        afd_calls.append((args[4], kwargs["system"], kwargs["gpus_per_node"]))
+        return [], []
+
+    monkeypatch.setattr(experiment_module, "agg_cluster_rows", fake_agg)
+    monkeypatch.setattr(experiment_module, "afd_cluster_rows", fake_afd)
+    monkeypatch.setattr(experiment_module, "git_value", lambda *args: "test")
+    args = SimpleNamespace(
+        models=["qwen3_235b"],
+        workloads=["8k"],
+        total_gpus=[16, 24, 36],
+        system="b200_sxm",
+        afd_moe_profile=None,
+        profile_scope="primary",
+        require_measured_moe=False,
+        output=tmp_path / "sweep.json",
+    )
+
+    payload = experiment_module.run(args)
+
+    assert agg_calls == [(size, "b200_sxm", 8) for size in (16, 24, 36)] * 2
+    assert afd_calls == [(size, "b200_sxm", 8) for size in (16, 24, 32)] * 2
+    assert payload["contract"]["system"] == "b200_sxm"
+    assert payload["contract"]["gpus_per_node"] == 8
+    assert payload["contract"]["afd_service_unit_gpu_grid"] == [16, 24, 32]
 
 
 def test_renderer_labels_exact_megamoe_backend(renderer_module):

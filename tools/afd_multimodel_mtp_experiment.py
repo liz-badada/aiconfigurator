@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sweep fixed-size GB200 pools for AGG, AFD, and matched MTP variants."""
+"""Sweep fixed-size GPU pools for AGG, AFD, and matched MTP variants."""
 
 from __future__ import annotations
 
@@ -25,13 +25,14 @@ from aiconfigurator.sdk.backends.factory import get_backend
 from aiconfigurator.sdk.config import AFDConfig
 from aiconfigurator.sdk.inference_session import AFDInferenceSession, InferenceSession
 from aiconfigurator.sdk.models import get_model
+from aiconfigurator.sdk.perf_database import load_system_spec
 from aiconfigurator.sdk.speculative import SpeculativeDecodingProfile
 from aiconfigurator.sdk.task_v2 import Task
 
-SYSTEM = "gb200"
+DEFAULT_SYSTEM = "gb200"
 BACKEND = "sglang"
 DATABASE_MODE = "HYBRID"
-GPUS_PER_NODE = 4
+DEFAULT_GPUS_PER_NODE = 4
 TOTAL_GPU_GRID = (16, 24, 36, 48, 72)
 PIPELINE_MODEL = "conservative"
 DECODE_STRIDE = 128
@@ -511,12 +512,13 @@ def measured_stage(
     topology: str,
     logical_batch_per_source_rank: int,
     microbatches: int,
+    system: str = DEFAULT_SYSTEM,
 ) -> tuple[AFDMoEStageKey | None, AFDMoEStageMeasurement | None]:
     if profile_path is None or precision.measured_moe_precision is None or precision.measured_moe_backend is None:
         return None, None
     key = AFDMoEStageKey(
         model_path=spec.model_path,
-        system=SYSTEM,
+        system=system,
         stage=stage,
         topology=topology,
         logical_batch_per_source_rank=logical_batch_per_source_rank,
@@ -771,7 +773,13 @@ def generic_afd_residual(
 
 
 @cache
-def task_for(model_key: str, workload: str, scenario_name: str, precision_key: str) -> Task:
+def task_for(
+    model_key: str,
+    workload: str,
+    scenario_name: str,
+    precision_key: str,
+    system: str = DEFAULT_SYSTEM,
+) -> Task:
     spec = MODEL_BY_KEY[model_key]
     scenario = scenario_for(model_key, scenario_name)
     precision = precision_for(model_key, precision_key)
@@ -779,7 +787,7 @@ def task_for(model_key: str, workload: str, scenario_name: str, precision_key: s
     return Task(
         serving_mode="agg",
         model_path=spec.model_path,
-        system_name=SYSTEM,
+        system_name=system,
         backend_name=BACKEND,
         backend_version=spec.backend_version,
         database_mode=DATABASE_MODE,
@@ -802,9 +810,15 @@ def task_for(model_key: str, workload: str, scenario_name: str, precision_key: s
 
 
 @cache
-def database_for(model_key: str, workload: str, scenario_name: str, precision_key: str):
-    task = task_for(model_key, workload, scenario_name, precision_key)
-    return task._load_database(SYSTEM, BACKEND, task.backend_version)
+def database_for(
+    model_key: str,
+    workload: str,
+    scenario_name: str,
+    precision_key: str,
+    system: str = DEFAULT_SYSTEM,
+):
+    task = task_for(model_key, workload, scenario_name, precision_key, system)
+    return task._load_database(system, BACKEND, task.backend_version)
 
 
 def configured_model(task: Task, *, tp: int, dp: int, moe_tp: int, moe_ep: int):
@@ -835,15 +849,16 @@ def agg_point(
     tp: int,
     local_batch: int,
     measured_profile_path: str | None,
+    system: str = DEFAULT_SYSTEM,
 ) -> dict[str, Any]:
-    task = task_for(model_key, workload, scenario_name, precision_key)
+    task = task_for(model_key, workload, scenario_name, precision_key, system)
     scenario = scenario_for(model_key, scenario_name)
     precision = precision_for(model_key, precision_key)
     dp = world // tp
     model_config, model = configured_model(task, tp=tp, dp=dp, moe_tp=1, moe_ep=world)
     session = InferenceSession(
         model,
-        database_for(model_key, workload, scenario_name, precision_key),
+        database_for(model_key, workload, scenario_name, precision_key, system),
         get_backend(BACKEND),
     )
     runtime_config = task.build_runtime_config(batch_size=local_batch)
@@ -868,6 +883,7 @@ def agg_point(
             topology=f"ep{world}",
             logical_batch_per_source_rank=source_batch_per_rank,
             microbatches=1,
+            system=system,
         )
     generic_moe_ms = 0.0
     generic_residual_ms = 0.0
@@ -876,7 +892,7 @@ def agg_point(
             generation,
             sources,
             model=model,
-            database=database_for(model_key, workload, scenario_name, precision_key),
+            database=database_for(model_key, workload, scenario_name, precision_key, system),
             runtime_config=runtime_config,
             spec=MODEL_BY_KEY[model_key],
             scenario=scenario,
@@ -950,10 +966,13 @@ def agg_cluster_rows(
     precision: PrecisionProfile,
     total_gpus: int,
     measured_profile_path: str | None,
+    *,
+    system: str = DEFAULT_SYSTEM,
+    gpus_per_node: int = DEFAULT_GPUS_PER_NODE,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
-    for world in range(GPUS_PER_NODE, total_gpus + 1, GPUS_PER_NODE):
+    for world in range(gpus_per_node, total_gpus + 1, gpus_per_node):
         replicas = total_gpus // world
         if replicas <= 0:
             continue
@@ -972,6 +991,7 @@ def agg_cluster_rows(
                         tp,
                         int(local_batch),
                         measured_profile_path,
+                        system,
                     )
                     if point["oom"]:
                         continue
@@ -1019,9 +1039,11 @@ def afd_point(
     batch_per_a_gpu: int,
     microbatches: int,
     measured_profile_path: str | None,
+    system: str = DEFAULT_SYSTEM,
+    gpus_per_node: int = DEFAULT_GPUS_PER_NODE,
 ) -> dict[str, Any]:
-    task = task_for(spec.key, workload, scenario.name, precision.key)
-    database = database_for(spec.key, workload, scenario.name, precision.key)
+    task = task_for(spec.key, workload, scenario.name, precision.key, system)
+    database = database_for(spec.key, workload, scenario.name, precision.key, system)
     base_config = task.build_model_config(role="agg")
     a_config = copy.deepcopy(base_config)
     a_config.tp_size = a_tp
@@ -1032,8 +1054,8 @@ def afd_point(
     a_config.moe_tp_size = a_tp
     a_config.moe_ep_size = 1
 
-    a_gpus = a_nodes * GPUS_PER_NODE
-    f_gpus = f_nodes * GPUS_PER_NODE
+    a_gpus = a_nodes * gpus_per_node
+    f_gpus = f_nodes * gpus_per_node
     f_config = copy.deepcopy(base_config)
     f_config.tp_size = f_gpus
     f_config.pp_size = 1
@@ -1045,7 +1067,7 @@ def afd_point(
     afd_config = AFDConfig(
         n_a_nodes=a_nodes,
         n_f_nodes=f_nodes,
-        gpus_per_node=GPUS_PER_NODE,
+        gpus_per_node=gpus_per_node,
         tp_a=a_tp,
         f_moe_ep_size=f_gpus,
         a_batch_size=a_batch_size,
@@ -1064,6 +1086,7 @@ def afd_point(
         topology=f"{a_gpus}A{f_gpus}F",
         logical_batch_per_source_rank=batch_per_a_gpu,
         microbatches=microbatches,
+        system=system,
     )
     runtime_config = task.build_runtime_config(batch_size=global_requests)
     speculative_profile = SpeculativeDecodingProfile.from_inputs(scenario.nextn, scenario.accepted_drafts)
@@ -1201,14 +1224,17 @@ def afd_cluster_rows(
     precision: PrecisionProfile,
     total_gpus: int,
     measured_profile_path: str | None,
+    *,
+    system: str = DEFAULT_SYSTEM,
+    gpus_per_node: int = DEFAULT_GPUS_PER_NODE,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
-    total_nodes = total_gpus // GPUS_PER_NODE
+    total_nodes = total_gpus // gpus_per_node
     for f_nodes in range(1, total_nodes):
         a_nodes = total_nodes - f_nodes
-        a_gpus = a_nodes * GPUS_PER_NODE
-        f_gpus = f_nodes * GPUS_PER_NODE
+        a_gpus = a_nodes * gpus_per_node
+        f_gpus = f_nodes * gpus_per_node
         if spec.attention_heads % f_gpus:
             continue
         for a_tp in A_TPS:
@@ -1230,6 +1256,8 @@ def afd_cluster_rows(
                                 batch_per_a_gpu=int(batch_per_a_gpu),
                                 microbatches=microbatches,
                                 measured_profile_path=measured_profile_path,
+                                system=system,
+                                gpus_per_node=gpus_per_node,
                             )
                         )
                     except Exception as error:
@@ -1267,12 +1295,21 @@ def selected_profiles(
     return tuple(profile for profile in profiles if profile.backend_family in backend_families)
 
 
-def afd_service_unit_grid(fixed_pool_sizes: tuple[int, ...]) -> tuple[int, ...]:
+def afd_service_unit_grid(
+    fixed_pool_sizes: tuple[int, ...],
+    gpus_per_node: int = DEFAULT_GPUS_PER_NODE,
+) -> tuple[int, ...]:
     """Return every node-aligned AFD unit that can fit a selected fixed pool."""
 
     if not fixed_pool_sizes:
         return ()
-    return tuple(range(2 * GPUS_PER_NODE, max(fixed_pool_sizes) + 1, GPUS_PER_NODE))
+    return tuple(range(2 * gpus_per_node, max(fixed_pool_sizes) + 1, gpus_per_node))
+
+
+def system_gpus_per_node(system: str) -> int:
+    """Return the node width from the selected AIC system specification."""
+
+    return int(load_system_spec(system)["node"]["num_gpus_per_node"])
 
 
 def require_profile_system(profile: AFDMoEStageProfile, system: str) -> None:
@@ -1284,6 +1321,8 @@ def require_profile_system(profile: AFDMoEStageProfile, system: str) -> None:
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    system = getattr(args, "system", DEFAULT_SYSTEM)
+    gpus_per_node = system_gpus_per_node(system)
     selected_models = [MODEL_BY_KEY[key] for key in args.models]
     selected_workloads = list(args.workloads)
     selected_totals = tuple(sorted(set(args.total_gpus)))
@@ -1292,7 +1331,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if measured_profile_path is not None:
         profile = measured_profile(measured_profile_path)
         if args.require_measured_moe:
-            require_profile_system(profile, SYSTEM)
+            require_profile_system(profile, system)
     agg_rows: list[dict[str, Any]] = []
     afd_rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -1327,13 +1366,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 precision,
                 fixed_pool_size,
                 measured_profile_path,
+                system=system,
+                gpus_per_node=gpus_per_node,
             )
             new_agg.extend(rows)
             agg_failures.extend(row_failures)
 
         new_afd: list[dict[str, Any]] = []
         afd_failures: list[dict[str, Any]] = []
-        for unit_gpus in afd_service_unit_grid(fixed_pool_sizes):
+        for unit_gpus in afd_service_unit_grid(fixed_pool_sizes, gpus_per_node):
             rows, row_failures = afd_cluster_rows(
                 spec,
                 workload,
@@ -1341,6 +1382,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 precision,
                 unit_gpus,
                 measured_profile_path,
+                system=system,
+                gpus_per_node=gpus_per_node,
             )
             new_afd.extend(rows)
             afd_failures.extend(row_failures)
@@ -1373,10 +1416,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "dirty": bool(git_value("status", "--porcelain")),
         },
         "contract": {
-            "system": SYSTEM,
+            "system": system,
             "backend": BACKEND,
             "database_mode": DATABASE_MODE,
-            "gpus_per_node": GPUS_PER_NODE,
+            "gpus_per_node": gpus_per_node,
             "total_gpu_grid": list(selected_totals),
             "pipeline_model": PIPELINE_MODEL,
             "decode_stride": DECODE_STRIDE,
@@ -1384,8 +1427,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "microbatch_grid": list(MICROBATCHES),
             "f_node_rule": "all integer node splits: 1 <= F nodes < total nodes",
             "afd_row_scope": "one AFD service unit; fixed-pool analysis may pack identical units and charges idle GPUs",
-            "afd_service_unit_gpu_grid": list(afd_service_unit_grid(selected_totals)),
-            "agg_world_rule": "all 4-GPU increments; idle remainder is counted in the fixed total-GPU denominator",
+            "afd_service_unit_gpu_grid": list(afd_service_unit_grid(selected_totals, gpus_per_node)),
+            "agg_world_rule": (
+                f"all {gpus_per_node}-GPU node increments; idle remainder is counted in the fixed total-GPU denominator"
+            ),
             "static_tp_grid": list(STATIC_TPS),
             "speed_floors_tokps_per_user": list(SPEED_FLOORS),
             "afd_moe_profile": measured_profile_path,
@@ -1432,6 +1477,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--system", default=DEFAULT_SYSTEM, help="AIC system database name, for example gb200 or b200_sxm"
+    )
     parser.add_argument("--models", nargs="+", choices=sorted(MODEL_BY_KEY), default=sorted(MODEL_BY_KEY))
     parser.add_argument("--workloads", nargs="+", choices=sorted(WORKLOADS), default=sorted(WORKLOADS))
     parser.add_argument("--total-gpus", nargs="+", type=int, default=list(TOTAL_GPU_GRID))
@@ -1455,9 +1503,13 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.require_measured_moe and args.afd_moe_profile is None:
         parser.error("--require-measured-moe requires --afd-moe-profile")
-    invalid = [value for value in args.total_gpus if value < 2 * GPUS_PER_NODE or value % GPUS_PER_NODE]
+    try:
+        gpus_per_node = system_gpus_per_node(args.system)
+    except Exception as error:
+        parser.error(f"cannot load system {args.system!r}: {error}")
+    invalid = [value for value in args.total_gpus if value < 2 * gpus_per_node]
     if invalid:
-        parser.error(f"--total-gpus values must be multiples of {GPUS_PER_NODE} and at least 8: {invalid}")
+        parser.error(f"--total-gpus values must be at least two {gpus_per_node}-GPU nodes: {invalid}")
     return args
 
 
