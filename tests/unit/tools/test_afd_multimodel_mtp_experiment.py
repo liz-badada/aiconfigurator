@@ -92,6 +92,22 @@ def test_every_model_has_explicit_matched_backend_profiles(experiment_module):
         assert by_family["trtllm"][0].measured_moe_backend is None
 
 
+def test_long_context_grid_respects_each_model_sequence_contract(experiment_module):
+    supported = {
+        model.key: [
+            workload for workload in experiment_module.WORKLOADS if experiment_module.supports_workload(model, workload)
+        ]
+        for model in experiment_module.MODELS
+    }
+
+    assert supported["qwen3_235b"] == ["8k", "16k", "32k"]
+    assert supported["minimax_m25"] == ["8k", "16k", "32k", "64k", "128k"]
+    assert supported["minimax_m3"] == list(experiment_module.WORKLOADS)
+    assert supported["deepseek_v4_flash"] == list(experiment_module.WORKLOADS)
+    assert supported["deepseek_v4_pro"] == list(experiment_module.WORKLOADS)
+    assert experiment_module.WORKLOADS["1m"]["isl"] + experiment_module.WORKLOADS["1m"]["osl"] == 1048576
+
+
 def test_primary_scope_does_not_silently_select_a_control_backend(experiment_module):
     model = experiment_module.MODEL_BY_KEY["qwen3_235b"]
 
@@ -114,6 +130,25 @@ def test_missing_measurement_is_labeled_as_generic_control(experiment_module, ba
     }
 
 
+def test_overlap_contract_distinguishes_internal_and_outer_overlap(experiment_module):
+    measured = SimpleNamespace()
+
+    agg = experiment_module.overlap_contract("agg", measurement=measured)
+    assert agg["outer_pipeline"] == "none-colocated"
+    assert agg["a_f_compute_overlap"] is False
+    assert agg["backend_internal_overlap"] == "included-in-complete-measured-moe-stage"
+
+    afd_one = experiment_module.overlap_contract("afd", measurement=measured, microbatches=1)
+    assert afd_one["outer_pipeline"] == "serial-for-one-microbatch"
+    assert afd_one["a_f_compute_overlap"] is False
+
+    afd_two = experiment_module.overlap_contract("afd", measurement=measured, microbatches=2)
+    assert afd_two["outer_pipeline"] == "conservative-k2-max(a+a2f,f+f2a)"
+    assert afd_two["a_f_compute_overlap"] is True
+    assert afd_two["fully_hidden_comm_assumed"] is False
+    assert "zeroed" in afd_two["communication_accounting"]
+
+
 def test_cross_system_load_projection_is_explicit_and_backend_qualified(experiment_module, tmp_path):
     spec = experiment_module.MODEL_BY_KEY["qwen3_235b"]
     precision = experiment_module.selected_profiles(spec, "all", {"megamoe"})[0]
@@ -130,6 +165,7 @@ def test_cross_system_load_projection_is_explicit_and_backend_qualified(experime
                 "mtp_nextn": 0,
                 "microbatches": 2,
                 "moe_layers": spec.moe_layers,
+                "routed_topk": spec.topk,
                 "moe_precision": precision.measured_moe_precision,
                 "moe_backend": "megamoe",
                 "latency_ms": latency,
@@ -151,7 +187,7 @@ def test_cross_system_load_projection_is_explicit_and_backend_qualified(experime
     path.write_text(
         json.dumps(
             {
-                "schema": "aic.afd-moe-stage-profile.v2",
+                "schema": "aic.afd-moe-stage-profile.v3",
                 "lookup_policy": "exact-only",
                 "entries": entries,
             }
@@ -167,7 +203,6 @@ def test_cross_system_load_projection_is_explicit_and_backend_qualified(experime
         topology="12A4F",
         logical_batch_per_source_rank=24,
         microbatches=2,
-        target_load_per_f_rank=36,
         profile_policy="load-interpolate",
         profile_source_system="b200_sxm",
         profile_latency_scale=1.0,
@@ -184,7 +219,9 @@ def test_cross_system_load_projection_is_explicit_and_backend_qualified(experime
     }
     record = experiment_module.measurement_record(key, timing, profile_path=str(path))
     assert record["timing_source"] == "load-interpolated-profile"
-    assert record["target_load_per_f_rank"] == pytest.approx(36)
+    assert record["target_logical_tokens_per_f_rank_per_microbatch"] == pytest.approx(36)
+    assert record["target_routed_assignments_per_f_rank_per_microbatch"] == pytest.approx(288)
+    assert record["load_contract"]["routed_topk"] == 8
     assert len(record["anchors"]) == 2
 
 
@@ -193,7 +230,7 @@ def test_cross_system_load_projection_requires_explicit_scale(experiment_module,
     precision = experiment_module.selected_profiles(spec, "all", {"megamoe"})[0]
     path = tmp_path / "profile.json"
     path.write_text(
-        json.dumps({"schema": "aic.afd-moe-stage-profile.v2", "lookup_policy": "exact-only", "entries": []})
+        json.dumps({"schema": "aic.afd-moe-stage-profile.v3", "lookup_policy": "exact-only", "entries": []})
     )
 
     with pytest.raises(ValueError, match="explicit profile latency scale"):
@@ -206,7 +243,6 @@ def test_cross_system_load_projection_requires_explicit_scale(experiment_module,
             topology="12A4F",
             logical_batch_per_source_rank=24,
             microbatches=2,
-            target_load_per_f_rank=36,
             profile_policy="load-interpolate",
             profile_source_system="b200_sxm",
             system="gb200",
@@ -457,6 +493,24 @@ def test_mocker_replay_accepts_current_and_legacy_report_shapes(mocker_replay_mo
 
     assert mocker_replay_module.report_summary({"summary": summary}) is summary
     assert mocker_replay_module.report_summary(summary) is summary
+
+
+def test_mocker_decode_only_profile_uses_zero_cost_synthetic_prefill(mocker_replay_module, tmp_path):
+    import numpy as np
+
+    path = tmp_path / "profile.npz"
+    mocker_replay_module.write_profile(
+        path,
+        context=32768,
+        output_tokens=64,
+        local_batch=8,
+        raw_round_ms=12.5,
+        metadata={"case": "test"},
+    )
+
+    with np.load(path) as profile:
+        assert profile["prefill_ttft_ms"].tolist() == [0.0, 0.0]
+        assert profile["decode_context_length"].tolist() == [32768.0, 32832.0]
 
 
 def test_renderer_line_charts_use_nvidia_palette_without_point_labels(renderer_module):

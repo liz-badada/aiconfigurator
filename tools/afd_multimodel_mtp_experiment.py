@@ -21,6 +21,7 @@ from aiconfigurator.sdk.afd_moe_profile import (
     AFDMoEStageMeasurement,
     AFDMoEStageProfile,
     AFDMoEStageProjection,
+    f_rank_loads,
 )
 from aiconfigurator.sdk.backends.factory import get_backend
 from aiconfigurator.sdk.config import AFDConfig
@@ -54,6 +55,43 @@ WORKLOADS = {
         "osl": 1024,
         "afd_batch_per_a_gpu": (2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96),
         "agg_local_batch": (1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 112, 128, 160),
+    },
+    "32k": {
+        "isl": 32768,
+        "osl": 1024,
+        "afd_batch_per_a_gpu": (1, 2, 4, 8, 12, 16, 20, 24, 32, 40, 48, 56, 64),
+        "agg_local_batch": (1, 2, 4, 8, 12, 16, 20, 24, 32, 40, 48, 56, 64, 72, 80),
+    },
+    "64k": {
+        "isl": 65536,
+        "osl": 1024,
+        "afd_batch_per_a_gpu": (1, 2, 4, 8, 12, 16, 20, 24, 32, 40),
+        "agg_local_batch": (1, 2, 4, 8, 12, 16, 20, 24, 32, 40, 48),
+    },
+    "128k": {
+        "isl": 131072,
+        "osl": 1024,
+        "afd_batch_per_a_gpu": (1, 2, 4, 8, 12, 16, 20),
+        "agg_local_batch": (1, 2, 4, 8, 12, 16, 20, 24, 32, 40),
+    },
+    "256k": {
+        "isl": 262144,
+        "osl": 1024,
+        "afd_batch_per_a_gpu": (1, 2, 4, 8, 12, 16, 20),
+        "agg_local_batch": (1, 2, 4, 8, 12, 16, 20),
+    },
+    "512k": {
+        "isl": 524288,
+        "osl": 1024,
+        "afd_batch_per_a_gpu": (1, 2, 4, 8),
+        "agg_local_batch": (1, 2, 4, 8, 12, 16),
+    },
+    "1m": {
+        # Keep ISL + OSL inside the 1,048,576-token model contract.
+        "isl": 1047552,
+        "osl": 1024,
+        "afd_batch_per_a_gpu": (1, 2, 4),
+        "agg_local_batch": (1, 2, 4, 8),
     },
 }
 
@@ -100,6 +138,7 @@ class ModelSpec:
     model_path: str
     backend_version: str
     moe_backend: str | None
+    max_sequence_length: int
     attention_heads: int
     layers: int
     moe_layers: int
@@ -125,6 +164,7 @@ MODELS = (
         model_path="Qwen/Qwen3-235B-A22B-FP8",
         backend_version="0.5.14",
         moe_backend=None,
+        max_sequence_length=40960,
         attention_heads=64,
         layers=94,
         moe_layers=94,
@@ -198,6 +238,7 @@ MODELS = (
         model_path="MiniMaxAI/MiniMax-M2.5",
         backend_version="0.5.14",
         moe_backend=None,
+        max_sequence_length=196608,
         attention_heads=48,
         layers=62,
         moe_layers=62,
@@ -286,6 +327,7 @@ MODELS = (
         model_path="MiniMaxAI/MiniMax-M3",
         backend_version="0.5.14",
         moe_backend=None,
+        max_sequence_length=1048576,
         attention_heads=64,
         layers=60,
         moe_layers=57,
@@ -366,6 +408,7 @@ MODELS = (
         model_path="deepseek-ai/DeepSeek-V4-Flash",
         backend_version="0.5.14",
         moe_backend=None,
+        max_sequence_length=1048576,
         attention_heads=64,
         layers=43,
         moe_layers=43,
@@ -431,6 +474,7 @@ MODELS = (
         model_path="deepseek-ai/DeepSeek-V4-Pro",
         backend_version="0.5.12",
         moe_backend=None,
+        max_sequence_length=1048576,
         attention_heads=128,
         layers=61,
         moe_layers=61,
@@ -487,6 +531,13 @@ MODEL_BY_KEY = {model.key: model for model in MODELS}
 MoEStageTiming = AFDMoEStageMeasurement | AFDMoEStageProjection
 
 
+def supports_workload(spec: ModelSpec, workload: str) -> bool:
+    """Return whether prompt plus generated tokens stay inside the model contract."""
+
+    values = WORKLOADS[workload]
+    return int(values["isl"]) + int(values["osl"]) <= spec.max_sequence_length
+
+
 def git_value(*args: str) -> str:
     return subprocess.check_output(("git", *args), text=True).strip()
 
@@ -514,7 +565,6 @@ def measured_stage(
     topology: str,
     logical_batch_per_source_rank: int,
     microbatches: int,
-    target_load_per_f_rank: float,
     profile_policy: str = "exact",
     profile_source_system: str | None = None,
     profile_latency_scale: float | None = None,
@@ -531,6 +581,7 @@ def measured_stage(
         mtp_nextn=scenario.nextn,
         microbatches=microbatches,
         moe_layers=spec.moe_layers,
+        routed_topk=spec.topk,
         moe_precision=precision.measured_moe_precision,
         moe_backend=precision.measured_moe_backend,
     )
@@ -546,7 +597,6 @@ def measured_stage(
     return key, profile.project_by_f_rank_load(
         key,
         source_system=source_system,
-        target_load_per_f_rank=target_load_per_f_rank,
         latency_scale=1.0 if profile_latency_scale is None else profile_latency_scale,
     )
 
@@ -573,6 +623,16 @@ def measurement_record(
 ) -> dict[str, Any]:
     if key is None:
         return {"requested": False, "used": False, "reason": "precision has no measured profile contract"}
+    logical_load, routed_load = f_rank_loads(key)
+    load_contract = {
+        "logical_tokens_per_f_rank_per_microbatch": logical_load,
+        "routed_topk": key.routed_topk,
+        "routed_assignments_per_f_rank_per_microbatch": routed_load,
+        "formula": (
+            "logical_batch_per_source_rank * (mtp_nextn + 1) * topology_factor / microbatches "
+            "* routed_topk; topology_factor=A/F for AFD and 1 for AGG"
+        ),
+    }
     if measurement is None:
         return {
             "requested": True,
@@ -580,6 +640,7 @@ def measurement_record(
             "reason": "no exact key",
             "profile": profile_path,
             "key": asdict(key),
+            "load_contract": load_contract,
         }
     if isinstance(measurement, AFDMoEStageProjection):
         return {
@@ -588,16 +649,22 @@ def measurement_record(
             "timing_source": "load-interpolated-profile",
             "profile": profile_path,
             "key": asdict(key),
+            "load_contract": load_contract,
             "projected_latency_ms": measurement.latency_ms,
             "source_system": measurement.source_system,
             "source_topology": measurement.source_topology,
-            "target_load_per_f_rank": measurement.target_load_per_f_rank,
+            "target_logical_tokens_per_f_rank_per_microbatch": (
+                measurement.target_logical_tokens_per_f_rank_per_microbatch
+            ),
+            "target_routed_assignments_per_f_rank_per_microbatch": (
+                measurement.target_routed_assignments_per_f_rank_per_microbatch
+            ),
             "latency_scale": measurement.latency_scale,
             "generic_residual_ms": generic_residual_ms,
             "evidence": measurement.evidence,
             "anchors": [
                 {
-                    "load_per_f_rank": load,
+                    "routed_assignments_per_f_rank_per_microbatch": load,
                     "logical_batch_per_source_rank": anchor.key.logical_batch_per_source_rank,
                     "latency_ms": anchor.latency_ms,
                     "source_commit": anchor.source_commit,
@@ -616,6 +683,7 @@ def measurement_record(
         "timing_source": "exact-measured-profile",
         "profile": profile_path,
         "key": asdict(key),
+        "load_contract": load_contract,
         "measured_latency_ms": measurement.latency_ms,
         "generic_residual_ms": generic_residual_ms,
         "source_commit": measurement.source_commit,
@@ -665,6 +733,57 @@ def moe_backend_contract(
         "moe_backend": "generic-trtllm",
         "moe_time_source": "aic-database",
         "moe_kernel": control.moe_kernel,
+    }
+
+
+def overlap_contract(
+    system_kind: str,
+    *,
+    measurement: MoEStageTiming | None,
+    microbatches: int = 1,
+) -> dict[str, Any]:
+    """Describe exactly where overlap is accounted for in one result row."""
+
+    measured_stage = measurement is not None
+    if system_kind == "agg":
+        return {
+            "outer_pipeline": "none-colocated",
+            "a_f_compute_overlap": False,
+            "backend_internal_overlap": (
+                "included-in-complete-measured-moe-stage"
+                if measured_stage
+                else "embedded-in-aic-operation-latencies"
+            ),
+            "communication_accounting": (
+                "quant-dispatch-expert-combine-included-once-in-measured-stage"
+                if measured_stage
+                else "generic-aic-colocated-operation-graph"
+            ),
+            "fully_hidden_comm_assumed": False,
+        }
+    if system_kind != "afd":
+        raise ValueError(f"unsupported overlap-contract system kind: {system_kind!r}")
+    return {
+        "outer_pipeline": (
+            "serial-for-one-microbatch"
+            if microbatches < 2
+            else "conservative-k2-max(a+a2f,f+f2a)"
+        ),
+        "a_f_compute_overlap": microbatches >= 2,
+        "backend_internal_overlap": (
+            "included-in-complete-measured-split-stage"
+            if measured_stage
+            else "generic-compute-and-communication-terms"
+        ),
+        "communication_accounting": (
+            "dispatch-transfer-combine-in-measured-stage; generic-comm-zeroed-to-avoid-double-counting"
+            if measured_stage
+            else "a2f/f2a-explicit; f-allgather/reducescatter-and-a-combine-folded-into-pipeline-branches"
+        ),
+        "fully_hidden_comm_assumed": False,
+        "comm_hidden_flag_note": (
+            "false under the conservative K=2 model; this does not disable A/F overlap"
+        ),
     }
 
 
@@ -941,7 +1060,6 @@ def agg_point(
             topology=f"ep{world}",
             logical_batch_per_source_rank=source_batch_per_rank,
             microbatches=1,
-            target_load_per_f_rank=source_batch_per_rank * scenario.verification_width,
             profile_policy=profile_policy,
             profile_source_system=profile_source_system,
             profile_latency_scale=profile_latency_scale,
@@ -1006,6 +1124,7 @@ def agg_point(
         "modules": operation_rows("AGG", generation),
         "op_sources": sources,
         "moe_measurement": moe_measurement,
+        "overlap_contract": overlap_contract("agg", measurement=measurement),
         "backend_contract": {
             "framework": f"SGLang {MODEL_BY_KEY[model_key].backend_version}",
             **moe_backend_contract(MODEL_BY_KEY[model_key], precision, measurement),
@@ -1157,7 +1276,6 @@ def afd_point(
         topology=f"{a_gpus}A{f_gpus}F",
         logical_batch_per_source_rank=batch_per_a_gpu,
         microbatches=microbatches,
-        target_load_per_f_rank=(a_gpus * batch_per_a_gpu * scenario.verification_width / (f_gpus * microbatches)),
         profile_policy=profile_policy,
         profile_source_system=profile_source_system,
         profile_latency_scale=profile_latency_scale,
@@ -1264,6 +1382,11 @@ def afd_point(
         "pipeline_formula_ms": pipeline_fill_ms + t_cycle_layer * (microbatches * spec.layers - 1),
         "pipeline_bottleneck": "A" if t_a_layer + t_a2f_layer >= t_f_layer + t_f2a_layer else "F",
         "comm_hidden": bool(raw.get("decode_comm_hidden", False)),
+        "overlap_contract": overlap_contract(
+            "afd",
+            measurement=measurement,
+            microbatches=microbatches,
+        ),
         "a_memory_gb": float(raw["(a)memory"]),
         "f_memory_gb": float(raw["(f)memory"]),
         "modules": modules,
@@ -1434,6 +1557,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         (spec, workload, scenario, precision, fixed_pool_sizes)
         for spec in selected_models
         for workload in selected_workloads
+        if supports_workload(spec, workload)
         for scenario in spec.scenarios
         for precision in selected_profiles(spec, args.profile_scope, selected_backend_families)
         if (
@@ -1522,6 +1646,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "gpus_per_node": gpus_per_node,
             "total_gpu_grid": list(selected_totals),
             "pipeline_model": PIPELINE_MODEL,
+            "overlap_accounting": (
+                "AGG has no outer A/F pipeline. AFD uses serial execution for one microbatch and the "
+                "conservative K=2 max(TA+TA2F, TF+TF2A) cadence for two or more microbatches. "
+                "Measured MoE stages already include backend-internal quant/dispatch/compute/combine scheduling; "
+                "generic AFD communication terms are zeroed when such a stage is injected."
+            ),
+            "comm_hidden_semantics": (
+                "false in the conservative model means no optimistic fully hidden K=3 communication stage; "
+                "it does not mean A/F compute overlap is disabled"
+            ),
             "decode_stride": DECODE_STRIDE,
             "a_tp_grid": list(A_TPS),
             "microbatch_grid": list(MICROBATCHES),
@@ -1543,8 +1677,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "moe_profile_source_system": profile_source_system,
             "moe_profile_latency_scale": profile_latency_scale,
             "afd_moe_profile_policy": (
-                "exact full-key lookup, or explicit within-envelope monotone interpolation by physical tokens per "
-                "F rank and microbatch; interpolation never extrapolates and cross-system scaling is explicit"
+                "exact full-key lookup, or explicit within-envelope monotone interpolation by routed expert "
+                "assignments per F rank and microbatch; interpolation never extrapolates and cross-system scaling "
+                "is explicit"
+            ),
+            "workload_support": (
+                "a workload is swept only when ISL + OSL <= the model configuration's max_sequence_length"
             ),
             "batch_semantics": "batch_per_a_gpu; a_batch_size_per_worker=batch_per_a_gpu*a_tp",
             "mtp_compute": "verification width q=nextn+1; transformer work=q*L+nextn layer-equivalents",

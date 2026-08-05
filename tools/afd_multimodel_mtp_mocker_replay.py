@@ -16,8 +16,6 @@ from render_afd_multimodel_mtp_report import load_payload, primary_mtp, primary_
 BLOCK_SIZE = 64
 DEFAULT_OUTPUT_TOKENS = 64
 DEFAULT_TOTAL_GPUS = (72,)
-DEFAULT_WORKLOADS = ("8k", "16k")
-CONTEXT_LENGTHS = {"8k": 8192, "16k": 16384}
 
 
 def report_summary(payload: dict[str, Any]) -> dict[str, Any]:
@@ -49,12 +47,13 @@ def write_profile(
     local_batch: int,
     raw_round_ms: float,
     metadata: dict[str, Any],
+    synthetic_prefill_ms: float = 0.0,
 ) -> None:
     max_context = context + output_tokens
     np.savez(
         path,
         prefill_isl=np.asarray([0.0, float(local_batch * context)]),
-        prefill_ttft_ms=np.asarray([0.0, 1.0]),
+        prefill_ttft_ms=np.asarray([0.0, synthetic_prefill_ms]),
         decode_active_kv_tokens=np.asarray([0.0, float(local_batch * max_context)]),
         decode_context_length=np.asarray([float(context), float(max_context)]),
         decode_itl=np.full((2, 2), raw_round_ms, dtype=np.float64),
@@ -111,6 +110,7 @@ def replay_case(
     accepted_drafts: float | None,
     output_tokens: int,
     waves: int,
+    synthetic_prefill_ms: float,
 ) -> dict[str, Any]:
     workers, worker_batch, global_requests = worker_shape(row)
     case_id = f"{row['model']}_{row['workload']}_{row['total_gpus']}gpu_{row['scenario']}_{row['system_kind']}"
@@ -123,10 +123,15 @@ def replay_case(
         output_tokens=output_tokens,
         local_batch=worker_batch,
         raw_round_ms=float(row["raw_round_ms"]),
+        synthetic_prefill_ms=synthetic_prefill_ms,
         metadata={
-            "schema": "aic.afd-fixed-pool-mocker-profile.v2",
+            "schema": "aic.afd-fixed-pool-mocker-profile.v3",
             "case_id": case_id,
             "service_contract": "one AIC service unit represented as one virtual worker",
+            "prefill_contract": (
+                "synthetic state initialization only; excluded from the decode-only performance claim"
+            ),
+            "synthetic_prefill_ms": synthetic_prefill_ms,
             "source": source,
         },
     )
@@ -202,6 +207,7 @@ def replay_case(
         "workers": workers,
         "worker_batch": worker_batch,
         "raw_round_ms": row["raw_round_ms"],
+        "synthetic_prefill_ms": synthetic_prefill_ms,
         "profile": str(profile),
         "report": str(report),
         "command": command,
@@ -274,14 +280,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dynamo", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--models", nargs="+")
-    parser.add_argument("--workloads", nargs="+", default=list(DEFAULT_WORKLOADS))
+    parser.add_argument("--workloads", nargs="+")
     parser.add_argument("--total-gpus", nargs="+", type=int, default=list(DEFAULT_TOTAL_GPUS))
     parser.add_argument("--speed-floor", type=float, default=30.0)
     parser.add_argument("--output-tokens", type=int, default=DEFAULT_OUTPUT_TOKENS)
     parser.add_argument("--waves", type=int, default=1)
+    parser.add_argument(
+        "--synthetic-prefill-ms",
+        type=float,
+        default=0.0,
+        help=(
+            "Synthetic local-prefill delay used only to initialize Mocker request state. "
+            "The decode-only validation default is 0 ms."
+        ),
+    )
     args = parser.parse_args()
     if args.waves < 1 or args.output_tokens < 1:
         parser.error("--waves and --output-tokens must be positive")
+    if not math.isfinite(args.synthetic_prefill_ms) or args.synthetic_prefill_ms < 0:
+        parser.error("--synthetic-prefill-ms must be finite and non-negative")
     return args
 
 
@@ -289,6 +306,7 @@ def main() -> int:
     args = parse_args()
     payload = load_payload(args.sweep)
     models = args.models or sorted(payload["models"])
+    workloads = args.workloads or sorted(payload["workloads"])
     unknown = sorted(set(models) - set(payload["models"]))
     if unknown:
         raise ValueError(f"models not present in sweep: {', '.join(unknown)}")
@@ -299,7 +317,7 @@ def main() -> int:
     for model, scenario, row in selected_rows(
         payload,
         models=models,
-        workloads=args.workloads,
+        workloads=workloads,
         total_gpus=args.total_gpus,
         speed_floor=args.speed_floor,
     ):
@@ -312,18 +330,19 @@ def main() -> int:
                 dynamo=dynamo,
                 output_dir=output_dir,
                 row=row,
-                context=CONTEXT_LENGTHS[row["workload"]],
+                context=int(payload["workloads"][row["workload"]]["isl"]),
                 nextn=int(scenario["nextn"]),
                 accepted_drafts=scenario["accepted_drafts"],
                 output_tokens=args.output_tokens,
                 waves=args.waves,
+                synthetic_prefill_ms=args.synthetic_prefill_ms,
             )
         )
     output = output_dir / "mocker_summary.json"
     output.write_text(
         json.dumps(
             {
-                "schema": "aic.afd-fixed-pool-mocker.v2",
+                "schema": "aic.afd-fixed-pool-mocker.v3",
                 "dynamo_branch": subprocess.check_output(
                     ("git", "branch", "--show-current"), cwd=dynamo, text=True
                 ).strip(),
@@ -331,11 +350,14 @@ def main() -> int:
                 "speed_floor_tokps_per_user": args.speed_floor,
                 "output_tokens_per_request": args.output_tokens,
                 "waves": args.waves,
+                "synthetic_prefill_ms": args.synthetic_prefill_ms,
                 "sweep_sources": payload["sources"],
                 "profile_note": (
                     "AIC supplies one fixed service unit's raw decode-round time. Mocker validates unit replication, "
                     "round-robin routing, request lifecycle, finite-wave tails, and stochastic MTP burst accounting; "
-                    "it does not re-estimate attention or MoE kernels. Mocker's reported output throughput is a "
+                    "it does not re-estimate attention or MoE kernels. Prefill is a synthetic state-initialization "
+                    f"event ({args.synthetic_prefill_ms:g} ms, decode-only default 0 ms), not a TTFT prediction. "
+                    "Mocker's reported output throughput is a "
                     "finite-wave measurement, while expected_output_throughput_tok_s is AIC's saturated "
                     "steady-state reference."
                 ),

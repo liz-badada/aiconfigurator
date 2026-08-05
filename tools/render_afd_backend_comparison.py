@@ -129,7 +129,8 @@ def render(sweeps: list[tuple[str, dict]], speed_floor: float, detail_reports: d
     body += (
         '<div class="callout"><strong>Comparison rule.</strong> Each line compares AGG+AFD against AGG while '
         "holding the named MoE backend fixed in all four arms. A point is shown only when both arms satisfy the "
-        f"{speed_floor:g} committed tokens/s/user floor and lie inside the available measured-load envelope.</div>"
+        f"{speed_floor:g} committed tokens/s/user floor and lie inside the available measured "
+        "routed-assignment-load envelope.</div>"
         '<div class="callout"><strong>Scheduling boundary.</strong> Backend identity is matched, but topology is not: '
         "AGG has no split A/F pipeline and uses graph/backend internal overlap only; AFD uses the conservative "
         "microbatch schedule (serial at M=1, otherwise max(A+A→F, F+F→A)) with no optimistic communication "

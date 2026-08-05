@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-CONTEXTS = ("8k", "16k")
+CONTEXTS = ("8k", "16k", "32k", "64k", "128k", "256k", "512k", "1m")
 TOTAL_GPU_GRID = (16, 24, 36, 48, 72)
 MODEL_ORDER = (
     "qwen3_235b",
@@ -181,6 +181,7 @@ def failure_key(row: dict[str, Any]) -> str:
 
 def load_payload(paths: list[Path]) -> dict[str, Any]:
     models: dict[str, dict[str, Any]] = {}
+    workloads: dict[str, dict[str, Any]] = {}
     rows: dict[tuple[Any, ...], dict[str, Any]] = {}
     failures: dict[str, dict[str, Any]] = {}
     contracts: list[dict[str, Any]] = []
@@ -193,6 +194,10 @@ def load_payload(paths: list[Path]) -> dict[str, Any]:
         sources.append(str(path.resolve()))
         contracts.append(payload["contract"])
         code.append(payload["code"])
+        for key, value in payload.get("workloads", {}).items():
+            previous_workload = workloads.setdefault(key, value)
+            if previous_workload != value:
+                raise ValueError(f"inconsistent workload metadata for {key}")
         for model in payload["models"]:
             previous = models.setdefault(model["key"], model)
             if previous != model:
@@ -231,6 +236,7 @@ def load_payload(paths: list[Path]) -> dict[str, Any]:
     return {
         "schema": "aic.afd-fixed-pool-report-input.v1",
         "models": models,
+        "workloads": workloads,
         "rows": list(rows.values()),
         "failures": list(failures.values()),
         "contract": contracts[0],
@@ -249,6 +255,7 @@ def load_moe_reference(path: Path | None, url: str | None = None) -> dict[str, A
     if payload.get("schema") not in {
         "aic.afd-moe-stage-profile.v1",
         "aic.afd-moe-stage-profile.v2",
+        "aic.afd-moe-stage-profile.v3",
     }:
         raise ValueError(f"unsupported MoE reference schema in {resolved}: {payload.get('schema')}")
     entries = payload.get("entries", [])
@@ -320,7 +327,10 @@ def load_mocker_summaries(paths: list[Path]) -> list[dict[str, Any]]:
     summaries = []
     for path in paths:
         payload = json.loads(path.resolve().read_text(encoding="utf-8"))
-        if payload.get("schema") != "aic.afd-fixed-pool-mocker.v2":
+        if payload.get("schema") not in {
+            "aic.afd-fixed-pool-mocker.v2",
+            "aic.afd-fixed-pool-mocker.v3",
+        }:
             raise ValueError(f"unsupported Mocker schema in {path}: {payload.get('schema')}")
         rows = payload.get("results", [])
         if not rows:
@@ -1091,7 +1101,7 @@ def render_model(
                 y_max=common_throughput_max,
             ),
             "Each curve is independently optimized at the same user-speed floor. The y-axis is per total allocated GPU, "
-            "so idle GPUs in either AGG or AFD unit packing remain in the denominator. Both context panels use the same y scale.",
+            "so idle GPUs in either AGG or AFD unit packing remain in the denominator. All context panels use the same y scale.",
             chart_contract,
             data_table=chart_data_table(
                 throughput[workload],
@@ -1247,7 +1257,16 @@ def render_model(
         anchor_loads = "exact key"
         source_commits = str(measurement.get("source_commit", ""))[:12]
         if anchors:
-            anchor_loads = " → ".join(fmt(value["load_per_f_rank"], 3) for value in anchors)
+            anchor_loads = " → ".join(
+                fmt(
+                    value.get(
+                        "routed_assignments_per_f_rank_per_microbatch",
+                        value.get("load_per_f_rank"),
+                    ),
+                    3,
+                )
+                for value in anchors
+            )
             source_commits = ", ".join(
                 sorted({str(value.get("source_commit", ""))[:12] for value in anchors if value.get("source_commit")})
             )
@@ -1259,7 +1278,21 @@ def render_model(
                 esc(key["topology"]),
                 esc(measurement.get("source_topology", key["topology"])),
                 key["logical_batch_per_source_rank"],
-                fmt(measurement.get("target_load_per_f_rank"), 3),
+                key.get("routed_topk", "—"),
+                fmt(
+                    measurement.get(
+                        "target_logical_tokens_per_f_rank_per_microbatch",
+                        measurement.get("load_contract", {}).get("logical_tokens_per_f_rank_per_microbatch"),
+                    ),
+                    3,
+                ),
+                fmt(
+                    measurement.get(
+                        "target_routed_assignments_per_f_rank_per_microbatch",
+                        measurement.get("load_contract", {}).get("routed_assignments_per_f_rank_per_microbatch"),
+                    ),
+                    3,
+                ),
                 key["mtp_nextn"],
                 key["microbatches"],
                 fmt(measurement.get("measured_latency_ms", measurement.get("projected_latency_ms")), 3),
@@ -1278,7 +1311,9 @@ def render_model(
                 "Target topology",
                 "Measured topology",
                 "Logical batch / source rank",
-                "Target physical tokens / F rank / microbatch",
+                "Routed top-k",
+                "Logical tokens / F rank / microbatch",
+                "Routed assignments / F rank / microbatch",
                 "MTP nextN",
                 "Microbatches",
                 "Injected stage ms",
@@ -1291,7 +1326,7 @@ def render_model(
         )
         body += (
             '<p class="small muted">Exact rows use one complete measured MoE-stage key. Projected rows linearly '
-            "interpolate between the displayed physical-load anchors after enforcing a non-decreasing latency envelope; "
+            "interpolate between the displayed routed-assignment anchors after enforcing a non-decreasing latency envelope; "
             "no extrapolation is allowed. AIC residual contains only decoder work outside the measured MoE boundary. "
             "Injected stage time is not an end-to-end measurement.</p>"
         )
@@ -1332,7 +1367,7 @@ def render_model(
         body += figure(
             scatter_svg(pareto_by_context[workload], x_max=50, y_max=pareto_y_max),
             "Left is lower effective TPOT; up is higher tokens/s/GPU. Only non-dominated points with TPOT≤50 ms are shown. "
-            "The 8K and 16K charts use identical x and y intervals, so visual distances are directly comparable.",
+            "All context charts use identical x and y intervals, so visual distances are directly comparable.",
             chart_contract,
             data_table=chart_data_table(
                 pareto_by_context[workload],
@@ -1412,7 +1447,7 @@ def render_model(
     if all_arms_use_exact_measured_moe(arm_contracts):
         body += '<div class="callout ok"><strong>MoE boundary is exact measured data in all four arms.</strong> Attention, dense GEMM, router work outside the measured stage, communication, and uncovered MTP shapes may still come from AIC HYBRID estimates. End-to-end throughput is therefore a measured-MoE hybrid simulation, not an end-to-end silicon measurement.</div>'
     elif all_arms_use_load_projected_moe(arm_contracts):
-        body += '<div class="callout warn"><strong>MoE boundary is a measured-load projection in all four arms.</strong> Every selected point lies inside its measured physical-load envelope; no latency is extrapolated. Cross-system scale and anchor provenance are explicit above. Attention and work outside the MoE-stage boundary still come from AIC HYBRID estimates.</div>'
+        body += '<div class="callout warn"><strong>MoE boundary is a measured-load projection in all four arms.</strong> Every selected point lies inside its measured routed-assignment-load envelope; no latency is extrapolated. Cross-system scale and anchor provenance are explicit above. Attention and work outside the MoE-stage boundary still come from AIC HYBRID estimates.</div>'
     elif not profile["exact_shape_data"]:
         body += '<div class="callout warn"><strong>Projection warning.</strong> This primary profile lacks a native target-shape silicon row. Treat absolute throughput and the A:F optimum as a calibrated hypothesis until measured on the target kernel.</div>'
     else:
@@ -1445,8 +1480,11 @@ def render_model(
         "arm_backend_contracts": arm_contracts,
         "winners": summary_rows,
     }
+    context_label = "/".join(workload.upper() for workload in CONTEXTS)
     return document(
-        title, f"GB200 · decode-only · ISL 8K/16K · OSL 1024 · speed floor {speed_floor:g} tok/s/user", body
+        title,
+        f"GB200 · decode-only · ISL {context_label} · OSL 1024 · speed floor {speed_floor:g} tok/s/user",
+        body,
     ), summary
 
 
@@ -1477,7 +1515,8 @@ def render_index(
     body += (
         '<div class="callout"><strong>Interpolation implementation.</strong> This sweep uses the PR #1479 '
         "joint-log2 k-nearest-neighbor utilization transfer (k=4) for multi-axis AIC performance grids; the "
-        "one-dimensional tail path is unchanged. This is separate from the explicit, non-extrapolating physical-load "
+        "one-dimensional tail path is unchanged. This is separate from the explicit, non-extrapolating "
+        "routed-assignment-load "
         "interpolation used by measured MoE-stage profiles. The PR improves the known grid-cliff case but does not "
         "establish a universal ≤20% bound for every operation and shape.</div>"
     )
@@ -1564,7 +1603,8 @@ def render_index(
                 ]
             )
         use_note = (
-            "They are used only through within-envelope physical-load interpolation with the explicit cross-system "
+            "They are used only through within-envelope routed-assignment-load interpolation with the explicit "
+            "cross-system "
             f"latency scale {fmt(payload['contract'].get('moe_profile_latency_scale'), 3)}; they are not renamed as "
             f"{esc(payload['contract']['system'])} measurements."
             if uses_projection
@@ -1743,7 +1783,7 @@ def render_index(
                 COLORS.setdefault(
                     summary["label"], ("#76B900", "#0072B2", "#E69F00", "#CC79A7", "#4D4D4D")[len(series) - 1]
                 )
-            max_ratio = max(value for points in series.values() for _, value in points)
+            max_ratio = max((value for points in series.values() for _, value in points), default=1.0)
             body += f"<h3>{workload.upper()} · {mode}</h3>"
             body += figure(
                 line_svg(
@@ -1853,8 +1893,18 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    global CONTEXTS
+
     args = parse_args()
     payload = load_payload(args.sweep + args.control_sweep)
+    if payload["workloads"]:
+        CONTEXTS = tuple(
+            key
+            for key, _value in sorted(
+                payload["workloads"].items(),
+                key=lambda item: int(item[1]["isl"]),
+            )
+        )
     moe_reference = load_moe_reference(args.moe_reference_profile, args.moe_reference_url)
     mocker_summaries = load_mocker_summaries(args.mocker_summary)
     missing = [model for model in MODEL_ORDER if model not in payload["models"]]

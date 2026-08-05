@@ -19,6 +19,7 @@ def _entry(**overrides):
         "mtp_nextn": 0,
         "microbatches": 1,
         "moe_layers": 60,
+        "routed_topk": 8,
         "moe_precision": "fp4",
         "moe_backend": "megamoe",
         "latency_ms": 4.25,
@@ -39,12 +40,12 @@ def _entry(**overrides):
     return value
 
 
-def _write(tmp_path, entries):
+def _write(tmp_path, entries, *, schema="aic.afd-moe-stage-profile.v3"):
     path = tmp_path / "profile.json"
     path.write_text(
         json.dumps(
             {
-                "schema": "aic.afd-moe-stage-profile.v2",
+                "schema": schema,
                 "lookup_policy": "exact-only",
                 "entries": entries,
             }
@@ -64,6 +65,7 @@ def _key(**overrides):
         "mtp_nextn": 0,
         "microbatches": 1,
         "moe_layers": 60,
+        "routed_topk": 8,
         "moe_precision": "fp4",
         "moe_backend": "megamoe",
     }
@@ -82,10 +84,10 @@ def test_profile_uses_exact_full_key(tmp_path):
 
 
 def test_legacy_profile_is_read_as_megamoe(tmp_path):
-    path = _write(tmp_path, [_entry()])
+    path = _write(tmp_path, [_entry()], schema="aic.afd-moe-stage-profile.v1")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["schema"] = "aic.afd-moe-stage-profile.v1"
     payload["entries"][0].pop("moe_backend")
+    payload["entries"][0].pop("routed_topk")
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     profile = AFDMoEStageProfile.load(path)
@@ -96,8 +98,17 @@ def test_legacy_profile_is_read_as_megamoe(tmp_path):
 def test_v2_profile_requires_an_explicit_backend(tmp_path):
     entry = _entry()
     entry.pop("moe_backend")
+    entry.pop("routed_topk")
 
     with pytest.raises(ValueError, match="moe_backend"):
+        AFDMoEStageProfile.load(_write(tmp_path, [entry], schema="aic.afd-moe-stage-profile.v2"))
+
+
+def test_v3_profile_requires_routed_topk(tmp_path):
+    entry = _entry()
+    entry.pop("routed_topk")
+
+    with pytest.raises(ValueError, match="routed_topk"):
         AFDMoEStageProfile.load(_write(tmp_path, [entry]))
 
 
@@ -248,23 +259,26 @@ def test_profile_interpolates_only_inside_one_measured_f_rank_load_envelope(tmp_
     projection = profile.project_by_f_rank_load(
         target,
         source_system="b200_sxm",
-        target_load_per_f_rank=72,
+        target_load_per_f_rank=576,
         latency_scale=1.1,
     )
 
     assert projection is not None
     assert projection.latency_ms == pytest.approx(6.6)
     assert projection.source_topology == "4A4F"
-    assert projection.lower_anchor_load == pytest.approx(48)
-    assert projection.upper_anchor_load == pytest.approx(96)
-    assert (
-        profile.project_by_f_rank_load(
-            target,
-            source_system="b200_sxm",
-            target_load_per_f_rank=97,
-        )
-        is None
+    assert projection.target_logical_tokens_per_f_rank_per_microbatch == pytest.approx(72)
+    assert projection.target_routed_assignments_per_f_rank_per_microbatch == pytest.approx(576)
+    assert projection.lower_anchor_load == pytest.approx(384)
+    assert projection.upper_anchor_load == pytest.approx(768)
+    outside_envelope = _key(
+        system="gb200",
+        stage="afd",
+        topology="12A4F",
+        logical_batch_per_source_rank=48,
+        mtp_nextn=1,
+        microbatches=2,
     )
+    assert profile.project_by_f_rank_load(outside_envelope, source_system="b200_sxm") is None
 
 
 def test_profile_load_projection_uses_monotone_conservative_anchor_latency(tmp_path):
@@ -303,7 +317,7 @@ def test_profile_load_projection_uses_monotone_conservative_anchor_latency(tmp_p
     projection = profile.project_by_f_rank_load(
         target,
         source_system="b200_sxm",
-        target_load_per_f_rank=72,
+        target_load_per_f_rank=576,
     )
 
     assert projection is not None
@@ -347,14 +361,26 @@ def test_profile_load_projection_requires_unambiguous_source_topology(tmp_path):
         profile.project_by_f_rank_load(
             target,
             source_system="b200_sxm",
-            target_load_per_f_rank=48,
+            target_load_per_f_rank=384,
         )
 
     projection = profile.project_by_f_rank_load(
         target,
         source_system="b200_sxm",
         source_topology="4A4F",
-        target_load_per_f_rank=48,
+        target_load_per_f_rank=384,
     )
     assert projection is not None
     assert projection.latency_ms == pytest.approx(4.0)
+
+
+def test_profile_rejects_caller_load_that_omits_topk(tmp_path):
+    profile = AFDMoEStageProfile.load(_write(tmp_path, [_entry(system="b200_sxm")]))
+    target = _key(system="b200_sxm")
+
+    with pytest.raises(ValueError, match=r"batch \* verify_width \* routed_topk"):
+        profile.project_by_f_rank_load(
+            target,
+            source_system="b200_sxm",
+            target_load_per_f_rank=96,
+        )

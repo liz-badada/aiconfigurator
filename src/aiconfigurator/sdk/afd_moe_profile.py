@@ -8,11 +8,12 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
-PROFILE_SCHEMA = "aic.afd-moe-stage-profile.v2"
+PROFILE_SCHEMA = "aic.afd-moe-stage-profile.v3"
+PROFILE_SCHEMA_V2 = "aic.afd-moe-stage-profile.v2"
 LEGACY_PROFILE_SCHEMA = "aic.afd-moe-stage-profile.v1"
 Stage = Literal["agg", "afd"]
 
@@ -29,6 +30,7 @@ class AFDMoEStageKey:
     mtp_nextn: int
     microbatches: int
     moe_layers: int
+    routed_topk: int | None
     moe_precision: str
     moe_backend: str
 
@@ -59,12 +61,19 @@ class AFDMoEStageProjection:
     evidence: str
     source_system: str
     source_topology: str
-    target_load_per_f_rank: float
+    target_logical_tokens_per_f_rank_per_microbatch: float
+    target_routed_assignments_per_f_rank_per_microbatch: float
     latency_scale: float
     lower_anchor_load: float
     upper_anchor_load: float
     lower_anchor: AFDMoEStageMeasurement
     upper_anchor: AFDMoEStageMeasurement
+
+    @property
+    def target_load_per_f_rank(self) -> float:
+        """Backward-compatible alias for the routed-assignment load."""
+
+        return self.target_routed_assignments_per_f_rank_per_microbatch
 
 
 class AFDMoEStageProfile:
@@ -86,7 +95,7 @@ class AFDMoEStageProfile:
         if not isinstance(payload, dict):
             raise TypeError("AFD MoE stage profile root must be an object")
         schema = payload.get("schema")
-        if schema not in (LEGACY_PROFILE_SCHEMA, PROFILE_SCHEMA):
+        if schema not in (LEGACY_PROFILE_SCHEMA, PROFILE_SCHEMA_V2, PROFILE_SCHEMA):
             raise ValueError(f"unsupported AFD MoE stage profile schema: {payload.get('schema')!r}")
         if payload.get("lookup_policy") != "exact-only":
             raise ValueError("AFD MoE stage profile lookup_policy must be 'exact-only'")
@@ -101,7 +110,13 @@ class AFDMoEStageProfile:
     def find(self, key: AFDMoEStageKey) -> AFDMoEStageMeasurement | None:
         """Return the exact point, without interpolation or topology conversion."""
 
-        return self._by_key.get(key)
+        measurement = self._by_key.get(key)
+        if measurement is not None or key.routed_topk is None:
+            return measurement
+        # v1/v2 profiles predate routed_topk. Their model_path still fixes the
+        # routing contract, so exact lookup can safely use the legacy key. Load
+        # projection below also requires the target key's explicit top-k.
+        return self._by_key.get(replace(key, routed_topk=None))
 
     def require(self, key: AFDMoEStageKey) -> AFDMoEStageMeasurement:
         measurement = self.find(key)
@@ -114,7 +129,7 @@ class AFDMoEStageProfile:
         key: AFDMoEStageKey,
         *,
         source_system: str,
-        target_load_per_f_rank: float,
+        target_load_per_f_rank: float | None = None,
         latency_scale: float = 1.0,
         source_topology: str | None = None,
     ) -> AFDMoEStageProjection | None:
@@ -125,7 +140,20 @@ class AFDMoEStageProfile:
         when transferring an envelope between systems.
         """
 
-        target_load = _finite_float(target_load_per_f_rank, "target_load_per_f_rank", positive=True)
+        target_logical_tokens, expected_target_load = f_rank_loads(key)
+        target_load = expected_target_load
+        if target_load_per_f_rank is not None:
+            supplied_target_load = _finite_float(
+                target_load_per_f_rank,
+                "target_load_per_f_rank",
+                positive=True,
+            )
+            if not math.isclose(supplied_target_load, expected_target_load, rel_tol=1e-9, abs_tol=1e-9):
+                raise ValueError(
+                    "target_load_per_f_rank must equal batch * verify_width * routed_topk "
+                    "after A/F and microbatch partitioning: "
+                    f"supplied={supplied_target_load}, expected={expected_target_load}"
+                )
         scale = _finite_float(latency_scale, "latency_scale", positive=True)
         groups: dict[str, list[tuple[float, AFDMoEStageMeasurement]]] = {}
         for entry in self.entries:
@@ -137,12 +165,19 @@ class AFDMoEStageProfile:
                 or candidate.mtp_nextn != key.mtp_nextn
                 or candidate.microbatches != key.microbatches
                 or candidate.moe_layers != key.moe_layers
+                or (
+                    candidate.routed_topk is not None
+                    and key.routed_topk is not None
+                    and candidate.routed_topk != key.routed_topk
+                )
                 or candidate.moe_precision != key.moe_precision
                 or candidate.moe_backend != key.moe_backend
                 or (source_topology is not None and candidate.topology != source_topology)
             ):
                 continue
-            groups.setdefault(candidate.topology, []).append((_f_rank_load(candidate), entry))
+            groups.setdefault(candidate.topology, []).append(
+                (f_rank_loads(candidate, routed_topk_fallback=key.routed_topk)[1], entry)
+            )
 
         eligible: list[tuple[str, list[tuple[float, AFDMoEStageMeasurement]]]] = []
         for topology, raw_anchors in groups.items():
@@ -194,10 +229,13 @@ class AFDMoEStageProfile:
             key=key,
             model_profile=lower_entry.model_profile,
             latency_ms=interpolated * scale,
-            evidence="within-envelope monotone linear interpolation by physical tokens per F rank per microbatch",
+            evidence=(
+                "within-envelope monotone linear interpolation by routed expert assignments per F rank per microbatch"
+            ),
             source_system=source_system,
             source_topology=topology,
-            target_load_per_f_rank=target_load,
+            target_logical_tokens_per_f_rank_per_microbatch=target_logical_tokens,
+            target_routed_assignments_per_f_rank_per_microbatch=target_load,
             latency_scale=scale,
             lower_anchor_load=lower_load,
             upper_anchor_load=upper_load,
@@ -209,16 +247,23 @@ class AFDMoEStageProfile:
 _AFD_TOPOLOGY = re.compile(r"^(?P<a>[1-9][0-9]*)A(?P<f>[1-9][0-9]*)F$")
 
 
-def _f_rank_load(key: AFDMoEStageKey) -> float:
-    """Return physical token load per F rank and microbatch for a profile key."""
+def f_rank_loads(
+    key: AFDMoEStageKey,
+    *,
+    routed_topk_fallback: int | None = None,
+) -> tuple[float, float]:
+    """Return logical tokens and routed assignments per F rank/microbatch."""
 
-    load = key.logical_batch_per_source_rank * (key.mtp_nextn + 1) / key.microbatches
-    if key.stage == "agg":
-        return load
-    match = _AFD_TOPOLOGY.fullmatch(key.topology)
-    if match is None:
-        raise ValueError(f"AFD profile topology must use '<A>A<F>F': {key.topology!r}")
-    return load * int(match.group("a")) / int(match.group("f"))
+    logical_tokens = key.logical_batch_per_source_rank * (key.mtp_nextn + 1) / key.microbatches
+    if key.stage == "afd":
+        match = _AFD_TOPOLOGY.fullmatch(key.topology)
+        if match is None:
+            raise ValueError(f"AFD profile topology must use '<A>A<F>F': {key.topology!r}")
+        logical_tokens *= int(match.group("a")) / int(match.group("f"))
+    routed_topk = key.routed_topk if key.routed_topk is not None else routed_topk_fallback
+    if routed_topk is None:
+        raise ValueError("routed_topk is required to compute routed expert assignment load")
+    return logical_tokens, logical_tokens * routed_topk
 
 
 def _object(value: Any, field: str) -> dict[str, Any]:
@@ -299,6 +344,11 @@ def _parse_entry(value: Any, index: int, *, schema: str) -> AFDMoEStageMeasureme
         mtp_nextn=_integer(raw.get("mtp_nextn"), f"{prefix}.mtp_nextn", minimum=0),
         microbatches=_integer(raw.get("microbatches"), f"{prefix}.microbatches", minimum=1),
         moe_layers=_integer(raw.get("moe_layers"), f"{prefix}.moe_layers", minimum=1),
+        routed_topk=(
+            _integer(raw.get("routed_topk"), f"{prefix}.routed_topk", minimum=1)
+            if schema == PROFILE_SCHEMA or raw.get("routed_topk") is not None
+            else None
+        ),
         moe_precision=_string(raw.get("moe_precision"), f"{prefix}.moe_precision"),
         moe_backend=(
             "megamoe" if schema == LEGACY_PROFILE_SCHEMA else _string(raw.get("moe_backend"), f"{prefix}.moe_backend")
@@ -321,8 +371,10 @@ def _parse_entry(value: Any, index: int, *, schema: str) -> AFDMoEStageMeasureme
 __all__ = [
     "LEGACY_PROFILE_SCHEMA",
     "PROFILE_SCHEMA",
+    "PROFILE_SCHEMA_V2",
     "AFDMoEStageKey",
     "AFDMoEStageMeasurement",
     "AFDMoEStageProfile",
     "AFDMoEStageProjection",
+    "f_rank_loads",
 ]
