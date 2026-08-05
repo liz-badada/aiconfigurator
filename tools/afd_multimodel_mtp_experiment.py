@@ -750,9 +750,7 @@ def overlap_contract(
             "outer_pipeline": "none-colocated",
             "a_f_compute_overlap": False,
             "backend_internal_overlap": (
-                "included-in-complete-measured-moe-stage"
-                if measured_stage
-                else "embedded-in-aic-operation-latencies"
+                "included-in-complete-measured-moe-stage" if measured_stage else "embedded-in-aic-operation-latencies"
             ),
             "communication_accounting": (
                 "quant-dispatch-expert-combine-included-once-in-measured-stage"
@@ -764,16 +762,10 @@ def overlap_contract(
     if system_kind != "afd":
         raise ValueError(f"unsupported overlap-contract system kind: {system_kind!r}")
     return {
-        "outer_pipeline": (
-            "serial-for-one-microbatch"
-            if microbatches < 2
-            else "conservative-k2-max(a+a2f,f+f2a)"
-        ),
+        "outer_pipeline": ("serial-for-one-microbatch" if microbatches < 2 else "conservative-k2-max(a+a2f,f+f2a)"),
         "a_f_compute_overlap": microbatches >= 2,
         "backend_internal_overlap": (
-            "included-in-complete-measured-split-stage"
-            if measured_stage
-            else "generic-compute-and-communication-terms"
+            "included-in-complete-measured-split-stage" if measured_stage else "generic-compute-and-communication-terms"
         ),
         "communication_accounting": (
             "dispatch-transfer-combine-in-measured-stage; generic-comm-zeroed-to-avoid-double-counting"
@@ -781,9 +773,7 @@ def overlap_contract(
             else "a2f/f2a-explicit; f-allgather/reducescatter-and-a-combine-folded-into-pipeline-branches"
         ),
         "fully_hidden_comm_assumed": False,
-        "comm_hidden_flag_note": (
-            "false under the conservative K=2 model; this does not disable A/F overlap"
-        ),
+        "comm_hidden_flag_note": ("false under the conservative K=2 model; this does not disable A/F overlap"),
     }
 
 
