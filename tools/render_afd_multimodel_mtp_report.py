@@ -961,6 +961,11 @@ def contract_section(
                 ["Attention backend", esc(model["attention_backend"]), "Used by both AGG and AFD A-side"],
                 ["MoE structure", esc(model["moe_structure"]), f"Top-{model['topk']}, {model['layers']} layers"],
                 [
+                    "Routed-load identity",
+                    "Bsrc × (nextN+1) × top-k × topology factor ÷ microbatches",
+                    "topology factor=A/F for AFD and 1 for AGG; profile lookup never mixes different top-k",
+                ],
+                [
                     "MoE backend / kernel",
                     esc(
                         f"{backend_display_name(arm_contracts['AGG']['moe_backend'])} / "
@@ -981,6 +986,16 @@ def contract_section(
                     "identical units packed, idle remainder charged",
                 ],
                 ["Database", esc(contract["database_mode"]), f"decode stride={contract['decode_stride']}"],
+                [
+                    "Sequence contract",
+                    f"maximum ISL+OSL={model['max_sequence_length']:,} tokens",
+                    "A context is omitted when ISL+OSL exceeds this model limit",
+                ],
+                [
+                    "Simulation phase",
+                    "decode only",
+                    "Prefill latency is excluded; Mocker uses a 0 ms synthetic state seed, not a TTFT estimate",
+                ],
             ],
         )
         + '<p class="small muted">MTP accounting: verification executes q=N+1 token positions; committed progress is '
