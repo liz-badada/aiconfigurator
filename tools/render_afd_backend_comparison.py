@@ -130,9 +130,15 @@ def render(sweeps: list[tuple[str, dict]], speed_floor: float, detail_reports: d
         '<div class="callout"><strong>Comparison rule.</strong> Each line compares AGG+AFD against AGG while '
         "holding the named MoE backend fixed in all four arms. A point is shown only when both arms satisfy the "
         f"{speed_floor:g} committed tokens/s/user floor and lie inside the available measured-load envelope.</div>"
+        '<div class="callout"><strong>Scheduling boundary.</strong> Backend identity is matched, but topology is not: '
+        "AGG has no split A/F pipeline and uses graph/backend internal overlap only; AFD uses the conservative "
+        "microbatch schedule (serial at M=1, otherwise max(A+A→F, F+F→A)) with no optimistic communication "
+        "hiding.</div>"
         '<div class="callout warn"><strong>Evidence boundary.</strong> Profile-derived curves use B200 MoE-stage '
         "measurements as a load-matched GB200 projection with scale 1.0. They are not GB200 silicon measurements. "
-        "Missing points are not extrapolated.</div>"
+        "Missing points are not extrapolated. AIC multi-axis performance-grid interpolation uses the PR #1479 "
+        "joint-log2 kNN4 implementation; that fix is distinct from measured-stage load interpolation and is not a "
+        "universal ≤20% error guarantee.</div>"
     )
     body += "<h2>1. Backend identities</h2>"
     for model_key in report.MODEL_ORDER:

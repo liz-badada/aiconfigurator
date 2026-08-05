@@ -972,6 +972,14 @@ def contract_section(
         "P=1+E[accepted drafts]. Effective TPOT=T<sub>round</sub>/P and throughput=concurrency×P/T<sub>round</sub>. "
         "Acceptance assumptions change only P; they do not erase the q-wide attention/MoE work.</p>"
     )
+    section += (
+        '<div class="callout"><strong>Overlap boundary.</strong> AGG has no split A/F pipeline; it receives only '
+        "the overlap encoded by its model graph or measured backend stage. AFD uses the conservative outer "
+        "microbatch schedule: M=1 is serial, while M≥2 uses "
+        "cycle=max(A+A→F, F+F→A). It does not assume optimistic communication hiding. "
+        "For profile-derived MoE stages, backend dispatch/compute/combine is already inside the measured stage and "
+        "the corresponding separate AIC terms are not added again.</div>"
+    )
     section += "<h3>Four-arm MoE backend identity</h3>"
     section += table(
         ["Arm", "Framework", "MoE backend", "MoE kernel", "MoE precision", "Identity check"],
@@ -996,9 +1004,9 @@ def contract_section(
         )
     else:
         section += (
-            '<div class="callout"><strong>No unsupported MegaMoE substitution.</strong> This model has no '
-            "model-specific packaged MegaMoE contract in AIC. Both AGG arms and both AFD arms use the same "
-            "SGLang MoE kernel shown above; an AFD complete-F measurement is not reused as an AGG kernel time.</div>"
+            '<div class="callout"><strong>Matched non-MegaMoE control.</strong> Both AGG arms and both AFD arms use '
+            f"the same {esc(backend_display_name(arm_contracts['AGG']['moe_backend']))} timing policy shown above; "
+            "an AFD complete-F measurement is not reused as an AGG kernel time.</div>"
         )
     if moe_reference is not None:
         model_reference = moe_reference["models"].get(model["model_path"])
@@ -1457,6 +1465,28 @@ def render_index(
         f"arms at ≥{speed_floor:g} committed tokens/s/user.</div>"
     )
     body += "<h2>1. Evidence boundary</h2>"
+    code_rows = [
+        [
+            esc(item["branch"]),
+            f'<span class="mono">{esc(item["commit"][:12])}</span>',
+            '<span class="good">clean</span>' if not item.get("dirty") else '<span class="bad">dirty</span>',
+        ]
+        for item in payload["code"]
+    ]
+    body += table(["AIC branch", "AIC commit", "Sweep worktree"], code_rows)
+    body += (
+        '<div class="callout"><strong>Interpolation implementation.</strong> This sweep uses the PR #1479 '
+        "joint-log2 k-nearest-neighbor utilization transfer (k=4) for multi-axis AIC performance grids; the "
+        "one-dimensional tail path is unchanged. This is separate from the explicit, non-extrapolating physical-load "
+        "interpolation used by measured MoE-stage profiles. The PR improves the known grid-cliff case but does not "
+        "establish a universal ≤20% bound for every operation and shape.</div>"
+    )
+    body += (
+        '<div class="callout"><strong>Overlap boundary.</strong> AGG has no A/F split and uses only graph/backend '
+        "internal overlap. AFD uses the conservative outer microbatch pipeline: serial for M=1 and "
+        "max(A+A→F, F+F→A) for M≥2; optimistic communication hiding is disabled. Therefore the backend contract is "
+        "matched across arms, while the serving topology is intentionally different.</div>"
+    )
     body += table(
         ["Layer", "System", "What it supplies", "Used in GB200 E2E sweep"],
         [
