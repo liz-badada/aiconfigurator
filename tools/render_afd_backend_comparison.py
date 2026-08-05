@@ -48,7 +48,7 @@ def ratio_points(
     model_key: str,
     workload: str,
     with_mtp: bool,
-    speed_floor: float,
+    winners_cache: dict[tuple[str, str], dict],
 ) -> tuple[dict[str, list[tuple[float, float]]], list[list[object]]]:
     series = {}
     rows = []
@@ -56,7 +56,7 @@ def ratio_points(
         model = payload["models"][model_key]
         mtp_name = report.primary_mtp(model)["name"]
         scenario = mtp_name if with_mtp else "no_mtp"
-        winners = report.winners_for_model(payload, model, speed_floor)
+        winners = winners_cache[(label, model_key)]
         points = []
         for total in report.TOTAL_GPU_GRID:
             pair = winners[(workload, total, scenario)]
@@ -106,6 +106,11 @@ def render(sweeps: list[tuple[str, dict]], speed_floor: float, detail_reports: d
         model_key: report.supported_contexts(sweeps[0][1], sweeps[0][1]["models"][model_key])
         for model_key in report.MODEL_ORDER
     }
+    winners_cache = {
+        (label, model_key): report.winners_for_model(payload, payload["models"][model_key], speed_floor)
+        for label, payload in sweeps
+        for model_key in report.MODEL_ORDER
+    }
     for model_key in report.MODEL_ORDER:
         for workload in model_contexts[model_key]:
             for with_mtp in (False, True):
@@ -114,7 +119,7 @@ def render(sweeps: list[tuple[str, dict]], speed_floor: float, detail_reports: d
                     model_key=model_key,
                     workload=workload,
                     with_mtp=with_mtp,
-                    speed_floor=speed_floor,
+                    winners_cache=winners_cache,
                 )
                 prepared[(model_key, workload, with_mtp)] = (series, rows)
                 all_series.extend(value for points in series.values() for _, value in points)
