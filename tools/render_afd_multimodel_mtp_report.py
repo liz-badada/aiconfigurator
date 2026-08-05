@@ -359,6 +359,11 @@ def load_mocker_summaries(paths: list[Path]) -> list[dict[str, Any]]:
                 "total_gpus": sorted({int(row["total_gpus"]) for row in rows}),
                 "output_tokens": int(payload["output_tokens_per_request"]),
                 "waves": int(payload["waves"]),
+                "synthetic_prefill_ms": (
+                    None
+                    if payload.get("synthetic_prefill_ms") is None
+                    else float(payload["synthetic_prefill_ms"])
+                ),
                 "no_mtp_max_abs_tpot_error_pct": max_tpot_error(no_mtp),
                 "mtp_max_abs_tpot_error_pct": max_tpot_error(mtp),
                 "no_mtp_finite_efficiency": efficiency_range(no_mtp),
@@ -1635,6 +1640,7 @@ def render_index(
             [
                 "Replay suite",
                 "Coverage",
+                "Synthetic prefill seed",
                 "No-MTP max |TPOT error|",
                 "MTP max |TPOT error|",
                 "No-MTP finite-wave efficiency",
@@ -1649,6 +1655,11 @@ def render_index(
                         f"{'/'.join(summary['workloads']).upper()}; "
                         f"{'/'.join(map(str, summary['total_gpus']))} GPUs"
                     ),
+                    (
+                        "not recorded"
+                        if summary["synthetic_prefill_ms"] is None
+                        else f"{summary['synthetic_prefill_ms']:g} ms"
+                    ),
                     fmt(summary["no_mtp_max_abs_tpot_error_pct"], 4) + "%",
                     fmt(summary["mtp_max_abs_tpot_error_pct"], 4) + "%",
                     fmt_range(summary["no_mtp_finite_efficiency"], suffix="×"),
@@ -1660,7 +1671,8 @@ def render_index(
             css="wide",
         )
         body += (
-            '<p class="small muted">TPOT compares Mocker with the selected AIC service time. Finite-wave efficiency '
+            '<p class="small muted">TPOT compares Mocker with the selected AIC service time. The current decode-only '
+            "replay uses a 0 ms synthetic prefill state seed; it is not a TTFT model. Finite-wave efficiency "
             "compares completed-token throughput with AIC's saturated steady state. MTP can leave a stochastic partial "
             "final burst, so the short one-wave throughput is intentionally not treated as a kernel-performance result.</p>"
         )

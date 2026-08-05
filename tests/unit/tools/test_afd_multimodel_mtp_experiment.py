@@ -453,11 +453,12 @@ def test_renderer_summarizes_mocker_accounting_without_case_artifacts(renderer_m
     path.write_text(
         json.dumps(
             {
-                "schema": "aic.afd-fixed-pool-mocker.v2",
+                "schema": "aic.afd-fixed-pool-mocker.v3",
                 "dynamo_branch": "afd-moe-timing",
                 "dynamo_commit": "a" * 40,
                 "output_tokens_per_request": 128,
                 "waves": 8,
+                "synthetic_prefill_ms": 0.0,
                 "results": [
                     {
                         "model": "qwen3_235b",
@@ -483,6 +484,7 @@ def test_renderer_summarizes_mocker_accounting_without_case_artifacts(renderer_m
     summary = renderer_module.load_mocker_summaries([path])[0]
 
     assert summary["cases"] == 2
+    assert summary["synthetic_prefill_ms"] == 0.0
     assert summary["no_mtp_max_abs_tpot_error_pct"] == 0.0
     assert summary["mtp_max_abs_tpot_error_pct"] == 0.2
     assert summary["mtp_finite_efficiency"] == [0.91, 0.91]
