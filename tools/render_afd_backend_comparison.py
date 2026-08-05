@@ -146,7 +146,9 @@ def render(sweeps: list[tuple[str, dict]], speed_floor: float, detail_reports: d
         "hiding.</div>"
         '<div class="callout warn"><strong>Evidence boundary.</strong> Profile-derived curves use B200 MoE-stage '
         "measurements as a load-matched GB200 projection with scale 1.0. They are not GB200 silicon measurements. "
-        "Missing points are not extrapolated. AIC multi-axis performance-grid interpolation uses the PR #1479 "
+        "The source topology is recorded, but target service-unit topology can differ and no collective-topology "
+        "correction is applied. Missing points are not extrapolated. AIC multi-axis performance-grid interpolation "
+        "uses the PR #1479 "
         "joint-log2 kNN4 implementation; that fix is distinct from measured-stage load interpolation and is not a "
         "universal ≤20% error guarantee.</div>"
     )
