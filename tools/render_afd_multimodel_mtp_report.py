@@ -1693,7 +1693,9 @@ def render_index(
             "They are used only through within-envelope routed-assignment-load interpolation with the explicit "
             "cross-system "
             f"latency scale {fmt(payload['contract'].get('moe_profile_latency_scale'), 3)}; they are not renamed as "
-            f"{esc(payload['contract']['system'])} measurements."
+            f"{esc(payload['contract']['system'])} measurements. The source topology is recorded per row, but this "
+            "policy does not require the target service-unit topology to match it and applies no collective-topology "
+            "correction."
             if uses_projection
             else f"They validate the backend implementation but are not used as {esc(payload['contract']['system'])} latency."
         )

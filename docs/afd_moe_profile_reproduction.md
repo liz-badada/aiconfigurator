@@ -32,6 +32,12 @@ measurement on the target system. For models with a replicated shared expert,
 `routed_topk` excludes that shared expert; the complete measured stage latency
 still includes it.
 
+Load projection selects one qualified source-topology envelope, but it does not
+require the target service-unit topology to equal that source topology and it
+does not apply a collective-topology correction. Every retained row records
+both topologies. Use exact mode, or collect the missing topology, when a
+topology-exact result is required.
+
 ## Where the measured values live
 
 `afd_moe_time_ms` is a single-run SDK/CLI override; it is not the calibration
