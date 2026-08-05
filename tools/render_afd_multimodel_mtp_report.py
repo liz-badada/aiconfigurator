@@ -155,6 +155,18 @@ def document(title: str, subtitle: str, body: str) -> str:
     )
 
 
+def supported_contexts(payload: dict[str, Any], model: dict[str, Any]) -> tuple[str, ...]:
+    """Return only workloads inside the model's declared sequence limit."""
+
+    limit = int(model["max_sequence_length"])
+    return tuple(
+        workload
+        for workload in CONTEXTS
+        if workload in payload["workloads"]
+        and int(payload["workloads"][workload]["isl"]) + int(payload["workloads"][workload]["osl"]) <= limit
+    )
+
+
 def row_key(row: dict[str, Any]) -> tuple[Any, ...]:
     common = (
         row["system_kind"],
@@ -262,6 +274,41 @@ def load_moe_reference(path: Path | None, url: str | None = None) -> dict[str, A
     if not entries:
         raise ValueError(f"MoE reference contains no entries: {resolved}")
     systems = sorted({str(entry["system"]) for entry in entries})
+
+    def backend(entry: dict[str, Any]) -> str:
+        return str(entry.get("moe_backend", "megamoe"))
+
+    pair_fields = (
+        "model_path",
+        "system",
+        "stage",
+        "topology",
+        "logical_batch_per_source_rank",
+        "mtp_nextn",
+        "microbatches",
+        "moe_layers",
+        "moe_precision",
+        "routed_topk",
+    )
+
+    def pair_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+        return tuple(entry.get(field) for field in pair_fields)
+
+    pair_groups: defaultdict[tuple[Any, ...], dict[str, dict[str, Any]]] = defaultdict(dict)
+    for entry in entries:
+        pair_groups[pair_key(entry)][backend(entry)] = entry
+    paired_groups = [
+        (key, values) for key, values in pair_groups.items() if {"megamoe", "deepep_deepgemm"}.issubset(values)
+    ]
+    paired_by_stage = Counter(str(key[pair_fields.index("stage")]) for key, _values in paired_groups)
+    source_commits = sorted(
+        {str(entry.get("source", {}).get("commit")) for entry in entries if entry.get("source", {}).get("commit")}
+    )
+    validation_evidence = Counter(
+        str(entry.get("validation", {}).get("evidence"))
+        for entry in entries
+        if entry.get("validation", {}).get("evidence")
+    )
     grouped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     for entry in entries:
         grouped[str(entry["model_path"])].append(entry)
@@ -272,10 +319,6 @@ def load_moe_reference(path: Path | None, url: str | None = None) -> dict[str, A
 
     models = {}
     for model_path, model_entries in grouped.items():
-
-        def backend(entry: dict[str, Any]) -> str:
-            return str(entry.get("moe_backend", "megamoe"))
-
         mega = [entry for entry in model_entries if backend(entry) == "megamoe"]
         deep = [entry for entry in model_entries if backend(entry) == "deepep_deepgemm"]
         agg = [entry for entry in mega if entry["stage"] == "agg"]
@@ -283,6 +326,18 @@ def load_moe_reference(path: Path | None, url: str | None = None) -> dict[str, A
         deep_agg = [entry for entry in deep if entry["stage"] == "agg"]
         deep_afd = [entry for entry in deep if entry["stage"] == "afd"]
         validation_rows = [entry for entry in agg if entry.get("validation", {}).get("matched_speedup") is not None]
+        model_pair_groups: defaultdict[tuple[Any, ...], dict[str, dict[str, Any]]] = defaultdict(dict)
+        for entry in model_entries:
+            model_pair_groups[pair_key(entry)][backend(entry)] = entry
+
+        def paired_speedup(stage: str) -> list[float] | None:
+            ratios = [
+                float(values["deepep_deepgemm"]["latency_ms"]) / float(values["megamoe"]["latency_ms"])
+                for key, values in model_pair_groups.items()
+                if key[pair_fields.index("stage")] == stage and {"megamoe", "deepep_deepgemm"}.issubset(values)
+            ]
+            return [min(ratios), max(ratios)] if ratios else None
+
         models[model_path] = {
             "entries": len(model_entries),
             "agg_entries": len(agg),
@@ -298,6 +353,8 @@ def load_moe_reference(path: Path | None, url: str | None = None) -> dict[str, A
             "afd_latency_ms": value_range(afd, lambda entry: entry["latency_ms"]),
             "deepep_agg_latency_ms": value_range(deep_agg, lambda entry: entry["latency_ms"]),
             "deepep_afd_latency_ms": value_range(deep_afd, lambda entry: entry["latency_ms"]),
+            "agg_deepep_over_megamoe": paired_speedup("agg"),
+            "afd_deepep_over_megamoe": paired_speedup("afd"),
             "matched_speedup": value_range(validation_rows, lambda entry: entry["validation"]["matched_speedup"]),
             "matched_speedup_lower_bound": value_range(
                 validation_rows,
@@ -311,6 +368,11 @@ def load_moe_reference(path: Path | None, url: str | None = None) -> dict[str, A
         "url": url,
         "systems": systems,
         "entries": len(entries),
+        "paired_backend_keys": len(paired_groups),
+        "unpaired_backend_keys": len(pair_groups) - len(paired_groups),
+        "paired_backend_keys_by_stage": dict(sorted(paired_by_stage.items())),
+        "source_commits": source_commits,
+        "validation_evidence": dict(sorted(validation_evidence.items())),
         "models": models,
     }
 
@@ -354,15 +416,14 @@ def load_mocker_summaries(paths: list[Path]) -> list[dict[str, Any]]:
                 "dynamo_branch": payload["dynamo_branch"],
                 "dynamo_commit": payload["dynamo_commit"],
                 "cases": len(rows),
+                "skipped": len(payload.get("skipped", [])),
                 "models": sorted({str(row["model"]) for row in rows}),
                 "workloads": sorted({str(row["workload"]) for row in rows}),
                 "total_gpus": sorted({int(row["total_gpus"]) for row in rows}),
                 "output_tokens": int(payload["output_tokens_per_request"]),
                 "waves": int(payload["waves"]),
                 "synthetic_prefill_ms": (
-                    None
-                    if payload.get("synthetic_prefill_ms") is None
-                    else float(payload["synthetic_prefill_ms"])
+                    None if payload.get("synthetic_prefill_ms") is None else float(payload["synthetic_prefill_ms"])
                 ),
                 "no_mtp_max_abs_tpot_error_pct": max_tpot_error(no_mtp),
                 "mtp_max_abs_tpot_error_pct": max_tpot_error(mtp),
@@ -1069,6 +1130,7 @@ def render_model(
     moe_reference: dict[str, Any] | None,
 ) -> tuple[str, dict[str, Any]]:
     winners = winners_for_model(payload, model, speed_floor)
+    model_contexts = supported_contexts(payload, model)
     profile = primary_profile(model)
     mtp = primary_mtp(model)
     arm_contracts = primary_arm_backend_contracts(payload, model)
@@ -1087,7 +1149,7 @@ def render_model(
         "Blank entries mean that arm has no feasible configuration.</div>"
     )
     cards = []
-    for workload in CONTEXTS:
+    for workload in model_contexts:
         no_ratio = winners[(workload, 72, "no_mtp")]["ratio"]
         mtp_ratio = winners[(workload, 72, mtp["name"])]["ratio"]
         cards.extend(
@@ -1107,11 +1169,11 @@ def render_model(
     body += contract_section(model, payload["contract"], arm_contracts, moe_reference)
 
     body += "<h2>2. End-to-end fixed-pool performance</h2>"
-    throughput = {workload: throughput_series(winners, workload, mtp["name"]) for workload in CONTEXTS}
+    throughput = {workload: throughput_series(winners, workload, mtp["name"]) for workload in model_contexts}
     common_throughput_max = nice_max(
         max(value for by_context in throughput.values() for points in by_context.values() for _, value in points) * 1.05
     )
-    for workload in CONTEXTS:
+    for workload in model_contexts:
         body += f"<h3>{workload.upper()} input</h3>"
         body += figure(
             line_svg(
@@ -1151,7 +1213,7 @@ def render_model(
 
     body += "<h2>3. A:F ratio, stage balance, and end-to-end formula</h2>"
     winner_rows = []
-    for workload in CONTEXTS:
+    for workload in model_contexts:
         for total in TOTAL_GPU_GRID:
             for scenario, label in (("no_mtp", "No MTP"), (mtp["name"], "With MTP")):
                 pair = winners[(workload, total, scenario)]
@@ -1176,7 +1238,7 @@ def render_model(
     )
 
     selected_72 = []
-    for workload in CONTEXTS:
+    for workload in model_contexts:
         for scenario, label in (("no_mtp", "No MTP"), (mtp["name"], "MTP")):
             pair = winners[(workload, 72, scenario)]
             if pair["afd"]:
@@ -1237,7 +1299,7 @@ def render_model(
     module_categories = []
     module_values = []
     module_records = []
-    for workload in CONTEXTS:
+    for workload in model_contexts:
         for scenario, suffix in (("no_mtp", "no MTP"), (mtp["name"], "MTP")):
             pair = winners[(workload, 72, scenario)]
             for side, prefix in (("agg", "AGG"), ("afd", "AFD")):
@@ -1354,7 +1416,7 @@ def render_model(
     body += "<h2>5. Throughput–latency Pareto front</h2>"
     pareto_by_context = {}
     y_values = []
-    for workload in CONTEXTS:
+    for workload in model_contexts:
         series = {}
         for label, (scenario, side) in {
             "AGG": ("no_mtp", "agg"),
@@ -1382,7 +1444,7 @@ def render_model(
             y_values.extend(value for _, value in points)
         pareto_by_context[workload] = series
     pareto_y_max = nice_max(max(y_values, default=1.0) * 1.05)
-    for workload in CONTEXTS:
+    for workload in model_contexts:
         body += f"<h3>{workload.upper()} input · 72 GPUs</h3>"
         body += figure(
             scatter_svg(pareto_by_context[workload], x_max=50, y_max=pareto_y_max),
@@ -1401,7 +1463,7 @@ def render_model(
     available_profiles = sorted({row["precision_profile"] for row in payload["rows"] if row["model"] == model["key"]})
     for precision_key in available_profiles:
         precision = next(value for value in model["precision_profiles"] if value["key"] == precision_key)
-        for workload in CONTEXTS:
+        for workload in model_contexts:
             for scenario, label in (("no_mtp", "No MTP"), (mtp["name"], "With MTP")):
                 pair = paired_winner(
                     payload,
@@ -1475,7 +1537,7 @@ def render_model(
     body += '<p class="foot">All figures are inline SVG. No image assets or network access are required to view this file.</p>'
 
     summary_rows = []
-    for workload in CONTEXTS:
+    for workload in model_contexts:
         for total in TOTAL_GPU_GRID:
             record = {"workload": workload, "total_gpus": total}
             for scenario, prefix in (("no_mtp", "no_mtp"), (mtp["name"], "mtp")):
@@ -1500,7 +1562,7 @@ def render_model(
         "arm_backend_contracts": arm_contracts,
         "winners": summary_rows,
     }
-    context_label = "/".join(workload.upper() for workload in CONTEXTS)
+    context_label = "/".join(workload.upper() for workload in model_contexts)
     return document(
         title,
         f"GB200 · decode-only · ISL {context_label} · OSL 1024 · speed floor {speed_floor:g} tok/s/user",
@@ -1601,6 +1663,8 @@ def render_index(
                         "—",
                         "—",
                         "—",
+                        "—",
+                        "—",
                     ]
                 )
                 continue
@@ -1619,6 +1683,8 @@ def render_index(
                     fmt_range(reference["deepep_agg_latency_ms"], suffix=" ms"),
                     fmt_range(reference["afd_latency_ms"], suffix=" ms"),
                     fmt_range(reference["deepep_afd_latency_ms"], suffix=" ms"),
+                    fmt_range(reference["agg_deepep_over_megamoe"], suffix="×"),
+                    fmt_range(reference["afd_deepep_over_megamoe"], suffix="×"),
                     fmt_range(reference["matched_speedup_lower_bound"], suffix="×"),
                 ]
             )
@@ -1635,6 +1701,33 @@ def render_index(
             f"below are qualified {esc(', '.join(moe_reference['systems']))} silicon measurements from the {source}. "
             f"{use_note}</div>"
         )
+        source_commits = ", ".join(commit[:12] for commit in moe_reference["source_commits"])
+        evidence = ", ".join(f"{name}={count}" for name, count in moe_reference["validation_evidence"].items())
+        body += table(
+            ["Measured-backend audit", "Result"],
+            [
+                [
+                    "Exact same-key backend pairs",
+                    (
+                        f"{moe_reference['paired_backend_keys']} total; "
+                        f"AGG={moe_reference['paired_backend_keys_by_stage'].get('agg', 0)}, "
+                        f"AFD={moe_reference['paired_backend_keys_by_stage'].get('afd', 0)}, "
+                        f"unpaired={moe_reference['unpaired_backend_keys']}"
+                    ),
+                ],
+                ["Source commits", esc(source_commits)],
+                ["Qualification evidence", esc(evidence)],
+                [
+                    "Protocol strength",
+                    (
+                        "AGG same-point-colocated pairs run both backends in one process with alternating order. "
+                        "AFD pairs use the same full workload key but separate split jobs plus colocated correctness; "
+                        "they are not simultaneous measurements."
+                    ),
+                ],
+            ],
+            css="wide",
+        )
         body += table(
             [
                 "Model",
@@ -1644,10 +1737,17 @@ def render_index(
                 "AGG DeepEP+DeepGEMM stage latency",
                 "AFD MegaMoE F-stage latency",
                 "AFD DeepEP+DeepGEMM F-stage latency",
+                "AGG DeepEP/MegaMoE latency",
+                "AFD DeepEP/MegaMoE latency",
                 "DeepEP/MegaMoE conservative bound",
             ],
             reference_rows,
             css="wide",
+        )
+        body += (
+            '<p class="small muted">Paired latency ratios are DeepEP+DeepGEMM time divided by MegaMoE time at '
+            "the identical model, stage, topology, source batch, MTP width, microbatch count, precision, and routed "
+            "top-k. Values above 1.0 mean MegaMoE is faster.</p>"
         )
     if mocker_summaries:
         body += "<h3>Dynamo Mocker accounting checks</h3>"
@@ -1655,6 +1755,7 @@ def render_index(
             [
                 "Replay suite",
                 "Coverage",
+                "Skipped unsupported/infeasible",
                 "Synthetic prefill seed",
                 "No-MTP max |TPOT error|",
                 "MTP max |TPOT error|",
@@ -1670,6 +1771,7 @@ def render_index(
                         f"{'/'.join(summary['workloads']).upper()}; "
                         f"{'/'.join(map(str, summary['total_gpus']))} GPUs"
                     ),
+                    summary["skipped"],
                     (
                         "not recorded"
                         if summary["synthetic_prefill_ms"] is None
@@ -1761,7 +1863,10 @@ def render_index(
     headline_rows = []
     for summary in summaries:
         mtp = summary["primary_mtp"]
-        for workload in CONTEXTS:
+        summary_contexts = tuple(
+            workload for workload in CONTEXTS if any(row["workload"] == workload for row in summary["winners"])
+        )
+        for workload in summary_contexts:
             record = next(row for row in summary["winners"] if row["workload"] == workload and row["total_gpus"] == 72)
             headline_rows.append(
                 [

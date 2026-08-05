@@ -16,18 +16,21 @@ DeepEP+DeepGEMM arm.
 
 Load projection is a separate, explicitly labeled policy. It groups anchors
 by model, measured system, stage, measured topology, MTP width, microbatch
-count, layer count, precision, and backend. Its physical token load is:
+count, layer count, routed top-k, precision, and backend. Its lookup identity
+is routed expert assignments per F rank per microbatch:
 
 ```text
-AFD load per F rank per microbatch = (A GPUs / F GPUs) * source batch * (nextN + 1) / microbatches
-AGG load per F rank                 = source batch * (nextN + 1)
+AFD routed load = source batch * (nextN + 1) * routed top-k * (A GPUs / F GPUs) / microbatches
+AGG routed load = source batch * (nextN + 1) * routed top-k / microbatches
 ```
 
 Latency is made non-decreasing with load and linearly interpolated between the
 two enclosing anchors. A point below the minimum or above the maximum anchor
 is dropped; extrapolation is never allowed. Moving an envelope between systems
 requires an explicit positive latency scale and remains a projection, not a
-measurement on the target system.
+measurement on the target system. For models with a replicated shared expert,
+`routed_topk` excludes that shared expert; the complete measured stage latency
+still includes it.
 
 ## Where the measured values live
 
@@ -71,10 +74,10 @@ git lfs pull
 
 ## 2. Validate a measured profile
 
-The measurement pipeline exports `aic.afd-moe-stage-profile.v2` JSON. Version 2
-requires `moe_backend` in every exact key. Version 1 remains readable and is
-interpreted as legacy MegaMoE-only data. Loading the file is a strict
-validation step:
+The measurement pipeline exports `aic.afd-moe-stage-profile.v3` JSON. Version 3
+requires `moe_backend` and `routed_topk` in every exact key. Versions 1 and 2
+remain readable for legacy profiles. Loading the file is a strict validation
+step:
 
 ```bash
 uv run python -c \
@@ -88,6 +91,12 @@ carry the paired validation evidence emitted by the measurement pipeline.
 
 ## 3. Run the fixed-pool sweep
 
+The long-context grid is `8k 16k 32k 64k 128k 256k 512k 1m`. `1m` uses
+`ISL=1,047,552` and `OSL=1,024`, so the total sequence length is exactly
+1,048,576. Workloads are retained only when `ISL + OSL` is inside the model's
+declared limit: Qwen3-235B through 32K, MiniMax-M2.5 through 128K, and
+MiniMax-M3 plus both DeepSeek-V4 variants through 1M.
+
 Generic AIC SGLang/FlashInfer/TensorRT-LLM MoE control:
 
 ```bash
@@ -95,7 +104,7 @@ uv run python tools/afd_multimodel_mtp_experiment.py \
   --output /path/to/generic_sweep.json \
   --system gb200 \
   --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
-  --workloads 8k 16k \
+  --workloads 8k 16k 32k 64k 128k 256k 512k 1m \
   --total-gpus 16 24 36 48 72 \
   --profile-scope all \
   --moe-backends trtllm
@@ -109,7 +118,7 @@ uv run python tools/afd_multimodel_mtp_experiment.py \
   --output /path/to/prefer_measured_sweep.json \
   --system gb200 \
   --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
-  --workloads 8k 16k \
+  --workloads 8k 16k 32k 64k 128k 256k 512k 1m \
   --total-gpus 16 24 36 48 72 \
   --profile-scope all \
   --moe-backends megamoe \
@@ -124,7 +133,7 @@ uv run python tools/afd_multimodel_mtp_experiment.py \
   --output /path/to/measured_only_sweep.json \
   --system gb200 \
   --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
-  --workloads 8k 16k \
+  --workloads 8k 16k 32k 64k 128k 256k 512k 1m \
   --total-gpus 16 24 36 48 72 \
   --profile-scope all \
   --moe-backends megamoe \
@@ -146,7 +155,7 @@ uv run python tools/afd_multimodel_mtp_experiment.py \
   --output /path/to/megamoe_load_projected_sweep.json \
   --system gb200 \
   --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
-  --workloads 8k 16k \
+  --workloads 8k 16k 32k 64k 128k 256k 512k 1m \
   --total-gpus 16 24 36 48 72 \
   --profile-scope all \
   --moe-backends megamoe \
@@ -171,10 +180,19 @@ optimized directly at each fixed pool size, including all valid node-aligned
 worker sizes.
 
 Each row records `moe_measurement.used`, timing source, target key, measured
-anchors, target physical load, interpolation scale, injected latency, generic
+anchors, target routed-assignment load, interpolation scale, injected latency, generic
 residual, source commit/tree hash, and backend contract. The residual is
 limited to MTP auxiliary layer-equivalents and decoder layers not covered by
 the measured MoE boundary.
+
+Overlap has two separate boundaries. AGG has no outer A/F pipeline and keeps
+the overlap implemented by its graph or complete measured backend stage. AFD
+is serial for one microbatch; with two or more microbatches it uses the
+conservative cadence `max(A + A-to-F, F + F-to-A)`. A measured complete MoE
+stage already contains its backend-internal quant/dispatch/compute/combine
+scheduling, so the corresponding generic communication terms are zeroed
+instead of counted twice. The model never assumes a separate fully hidden
+communication stage.
 
 ## 4. Render the self-contained HTML report
 
@@ -223,9 +241,16 @@ uv run python tools/afd_multimodel_mtp_mocker_replay.py \
   --dynamo /path/to/dynamo \
   --output-dir /path/to/mocker_replay \
   --models qwen3_235b minimax_m25 minimax_m3 deepseek_v4_flash deepseek_v4_pro \
-  --workloads 8k 16k \
-  --total-gpus 16 24 36 48 72
+  --workloads 8k 16k 32k 64k 128k 256k 512k 1m \
+  --total-gpus 16 24 36 48 72 \
+  --synthetic-prefill-ms 0
 ```
+
+The zero-millisecond prefill entry initializes Mocker request state only. It
+is not a fake TTFT measurement, and the AIC sweep itself is decode-only.
+Unsupported model/context combinations are skipped using the same sequence
+limit as the sweep; in-limit cases without both AGG and AFD speed-floor
+winners are reported as skipped rather than converted into synthetic results.
 
 The default one-wave run intentionally includes startup, drain, and the
 stochastic final-request tail. Its output throughput is therefore not expected

@@ -446,6 +446,11 @@ def test_renderer_summarizes_external_moe_reference_without_calibrating(renderer
     assert reference["models"]["Model/Test"]["afd_latency_ms"] == [8.0, 8.0]
     assert reference["models"]["Model/Test"]["deepep_agg_latency_ms"] == [9.0, 9.0]
     assert reference["models"]["Model/Test"]["deepep_afd_latency_ms"] == [12.0, 12.0]
+    assert reference["paired_backend_keys"] == 2
+    assert reference["unpaired_backend_keys"] == 0
+    assert reference["paired_backend_keys_by_stage"] == {"afd": 1, "agg": 1}
+    assert reference["models"]["Model/Test"]["agg_deepep_over_megamoe"] == [1.8, 1.8]
+    assert reference["models"]["Model/Test"]["afd_deepep_over_megamoe"] == [1.5, 1.5]
 
 
 def test_renderer_summarizes_mocker_accounting_without_case_artifacts(renderer_module, tmp_path):
@@ -513,6 +518,47 @@ def test_mocker_decode_only_profile_uses_zero_cost_synthetic_prefill(mocker_repl
     with np.load(path) as profile:
         assert profile["prefill_ttft_ms"].tolist() == [0.0, 0.0]
         assert profile["decode_context_length"].tolist() == [32768.0, 32832.0]
+
+
+def test_mocker_skips_contexts_above_model_limit(mocker_replay_module, monkeypatch):
+    model = {
+        "key": "test",
+        "max_sequence_length": 40960,
+        "precision_profiles": [{"key": "primary", "primary": True}],
+        "scenarios": [
+            {"name": "no_mtp", "nextn": 0, "primary": False},
+            {"name": "mtp", "nextn": 1, "primary": True},
+        ],
+    }
+    payload = {
+        "models": {"test": model},
+        "workloads": {
+            "32k": {"isl": 32768, "osl": 1024},
+            "64k": {"isl": 65536, "osl": 1024},
+        },
+    }
+    monkeypatch.setattr(
+        mocker_replay_module,
+        "select_best",
+        lambda _payload, **kwargs: {"system_kind": kwargs["system_kind"]},
+    )
+
+    selected, skipped = mocker_replay_module.selected_rows(
+        payload,
+        models=["test"],
+        workloads=["32k", "64k"],
+        total_gpus=[16],
+        speed_floor=30.0,
+    )
+
+    assert len(selected) == 4
+    assert skipped == [
+        {
+            "model": "test",
+            "workload": "64k",
+            "reason": "ISL + OSL exceeds model max_sequence_length",
+        }
+    ]
 
 
 def test_renderer_line_charts_use_nvidia_palette_without_point_labels(renderer_module):

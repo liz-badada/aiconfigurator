@@ -102,8 +102,12 @@ def render(sweeps: list[tuple[str, dict]], speed_floor: float, detail_reports: d
 
     all_series = []
     prepared = {}
+    model_contexts = {
+        model_key: report.supported_contexts(sweeps[0][1], sweeps[0][1]["models"][model_key])
+        for model_key in report.MODEL_ORDER
+    }
     for model_key in report.MODEL_ORDER:
-        for workload in report.CONTEXTS:
+        for workload in model_contexts[model_key]:
             for with_mtp in (False, True):
                 series, rows = ratio_points(
                     sweeps,
@@ -164,7 +168,7 @@ def render(sweeps: list[tuple[str, dict]], speed_floor: float, detail_reports: d
             f'<p class="small muted">Attention: {report.esc(model["attention_type"])}; '
             f"{report.esc(model['attention_backend'])}. MoE: {report.esc(model['moe_structure'])}.</p>"
         )
-        for workload in report.CONTEXTS:
+        for workload in model_contexts[model_key]:
             for with_mtp, mode in ((False, "No MTP"), (True, "With MTP")):
                 series, rows = prepared[(model_key, workload, with_mtp)]
                 body += f"<h3>{workload.upper()} input · {mode}</h3>"

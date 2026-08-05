@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from render_afd_multimodel_mtp_report import load_payload, primary_mtp, primary_profile, select_best
+from render_afd_multimodel_mtp_report import (
+    load_payload,
+    primary_mtp,
+    primary_profile,
+    select_best,
+    supported_contexts,
+)
 
 BLOCK_SIZE = 64
 DEFAULT_OUTPUT_TOKENS = 64
@@ -240,10 +246,12 @@ def selected_rows(
     workloads: list[str],
     total_gpus: list[int],
     speed_floor: float,
-) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]], list[dict[str, Any]]]:
     selected = []
+    skipped = []
     for model_key in models:
         model = payload["models"][model_key]
+        supported = set(supported_contexts(payload, model))
         precision = primary_profile(model)["key"]
         mtp = primary_mtp(model)
         scenarios = [
@@ -251,9 +259,19 @@ def selected_rows(
             mtp,
         ]
         for workload in workloads:
+            if workload not in supported:
+                skipped.append(
+                    {
+                        "model": model_key,
+                        "workload": workload,
+                        "reason": "ISL + OSL exceeds model max_sequence_length",
+                    }
+                )
+                continue
             for total in total_gpus:
                 for scenario in scenarios:
                     rows = []
+                    missing = []
                     for system_kind in ("agg", "afd"):
                         row = select_best(
                             payload,
@@ -266,12 +284,22 @@ def selected_rows(
                             speed_floor=speed_floor,
                         )
                         if row is None:
-                            raise ValueError(
-                                f"no {system_kind} winner for {model_key}/{workload}/{scenario['name']}/{total} GPU"
-                            )
+                            missing.append(system_kind)
+                            continue
                         rows.append(row)
+                    if missing:
+                        skipped.append(
+                            {
+                                "model": model_key,
+                                "workload": workload,
+                                "scenario": scenario["name"],
+                                "total_gpus": total,
+                                "reason": f"no speed-floor winner for {','.join(missing)}",
+                            }
+                        )
+                        continue
                     selected.extend((model, scenario, row) for row in rows)
-    return selected
+    return selected, skipped
 
 
 def parse_args() -> argparse.Namespace:
@@ -310,17 +338,21 @@ def main() -> int:
     unknown = sorted(set(models) - set(payload["models"]))
     if unknown:
         raise ValueError(f"models not present in sweep: {', '.join(unknown)}")
+    unknown_workloads = sorted(set(workloads) - set(payload["workloads"]))
+    if unknown_workloads:
+        raise ValueError(f"workloads not present in sweep: {', '.join(unknown_workloads)}")
     dynamo = args.dynamo.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     results = []
-    for model, scenario, row in selected_rows(
+    selected, skipped = selected_rows(
         payload,
         models=models,
         workloads=workloads,
         total_gpus=args.total_gpus,
         speed_floor=args.speed_floor,
-    ):
+    )
+    for model, scenario, row in selected:
         print(
             f"running {row['model']} {row['workload']} {row['total_gpus']} GPU {row['scenario']} {row['system_kind']}",
             flush=True,
@@ -351,6 +383,7 @@ def main() -> int:
                 "output_tokens_per_request": args.output_tokens,
                 "waves": args.waves,
                 "synthetic_prefill_ms": args.synthetic_prefill_ms,
+                "skipped": skipped,
                 "sweep_sources": payload["sources"],
                 "profile_note": (
                     "AIC supplies one fixed service unit's raw decode-round time. Mocker validates unit replication, "
@@ -368,7 +401,7 @@ def main() -> int:
         ),
         encoding="utf-8",
     )
-    print(json.dumps({"output": str(output), "cases": len(results)}, indent=2))
+    print(json.dumps({"output": str(output), "cases": len(results), "skipped": len(skipped)}, indent=2))
     return 0
 
 
