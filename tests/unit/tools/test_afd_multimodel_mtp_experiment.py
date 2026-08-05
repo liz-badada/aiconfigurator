@@ -411,6 +411,42 @@ def test_renderer_labels_matched_load_projected_backends(renderer_module):
     assert not renderer_module.all_arms_use_load_projected_moe(contracts)
 
 
+def test_renderer_preserves_profile_time_source_in_primary_arm_contracts(renderer_module):
+    model = {
+        "key": "model",
+        "precision_profiles": [{"key": "profile", "primary": True}],
+        "scenarios": [{"name": "mtp", "primary": True}],
+    }
+    contract = {
+        "framework": "SGLang",
+        "moe_backend": "projected-megamoe",
+        "moe_kernel": "megamoe",
+        "moe_precision": "FP8",
+        "moe_time_source": "load-interpolated-profile",
+        "attention_backend": "FlashInfer",
+    }
+    rows = [
+        {
+            "model": "model",
+            "scenario": scenario,
+            "precision_profile": "profile",
+            "system_kind": system_kind,
+            "backend_contract": dict(contract),
+        }
+        for scenario, system_kind in (
+            ("no_mtp", "agg"),
+            ("no_mtp", "afd"),
+            ("mtp", "agg"),
+            ("mtp", "afd"),
+        )
+    ]
+
+    arm_contracts = renderer_module.primary_arm_backend_contracts({"rows": rows}, model)
+
+    assert renderer_module.all_arms_use_load_projected_moe(arm_contracts)
+    assert {value["moe_time_source"] for value in arm_contracts.values()} == {"load-interpolated-profile"}
+
+
 def test_renderer_summarizes_external_moe_reference_without_calibrating(renderer_module, tmp_path):
     entries = []
     for backend, stage, topology, microbatches, latency in (

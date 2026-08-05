@@ -64,6 +64,7 @@ BACKEND_COMPARE_FIELDS = (
     "moe_backend",
     "moe_kernel",
     "moe_precision",
+    "moe_time_source",
     "attention_backend",
 )
 PARETO_X_LABEL = "Effective TPOT (ms / committed token)"
