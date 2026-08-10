@@ -96,6 +96,182 @@ def backend_contract_rows(sweeps: list[tuple[str, dict]], model_key: str) -> lis
     return rows
 
 
+def backend_overview_rows(
+    sweeps: list[tuple[str, dict]],
+    *,
+    speed_floor: float,
+    detail_reports: dict[str, str],
+) -> list[list[object]]:
+    rows = []
+    for label, payload in sweeps:
+        ratios = {"no_mtp": [], "mtp": []}
+        expected = {"no_mtp": 0, "mtp": 0}
+        for model_key in report.MODEL_ORDER:
+            model = payload["models"][model_key]
+            winners = report.winners_for_model(payload, model, speed_floor)
+            mtp_name = report.primary_mtp(model)["name"]
+            for workload in report.supported_contexts(payload, model):
+                for total in report.TOTAL_GPU_GRID:
+                    for bucket, scenario in (("no_mtp", "no_mtp"), ("mtp", mtp_name)):
+                        expected[bucket] += 1
+                        ratio = winners[(workload, total, scenario)]["ratio"]
+                        if ratio is not None:
+                            ratios[bucket].append(ratio)
+
+        contract = payload["contract"]
+        if contract.get("afd_moe_profile"):
+            evidence = (
+                f"{report.esc(str(contract.get('moe_profile_source_system') or 'measured'))} measured "
+                f"F-stage; {report.esc(str(contract.get('moe_profile_policy') or 'lookup'))}; "
+                "GB200 projection"
+            )
+        else:
+            evidence = "Generic AIC HYBRID database simulation"
+
+        def coverage(bucket: str) -> str:
+            values = ratios[bucket]
+            wins = sum(value > 1.0 for value in values)
+            return f"{len(values)}/{expected[bucket]} matched; {wins} AFD wins"
+
+        values = ratios["no_mtp"] + ratios["mtp"]
+        ratio_range = f"{min(values):.3f}&ndash;{max(values):.3f}&times;" if values else "no matched point"
+        link = detail_reports.get(label)
+        label_html = report.esc(label)
+        if link:
+            label_html = f'<a href="{report.esc(link)}">{label_html}</a>'
+        rows.append(
+            [
+                label_html,
+                report.esc(evidence),
+                coverage("no_mtp"),
+                coverage("mtp"),
+                ratio_range,
+            ]
+        )
+    return rows
+
+
+def render_overview(
+    sweeps: list[tuple[str, dict]],
+    *,
+    speed_floor: float,
+    detail_reports: dict[str, str],
+    comparison_link: str,
+    data_index_link: str | None = None,
+    paper_review_link: str | None = None,
+) -> str:
+    reference = sweeps[0][1]
+    contract = reference["contract"]
+    backend_links = "".join(
+        f'<a href="{report.esc(detail_reports[label])}">{report.esc(label)}</a>'
+        for label, _ in sweeps
+        if label in detail_reports
+    )
+    data_link = (
+        f'<a href="{report.esc(data_index_link)}">Data provenance and raw artifacts</a>' if data_index_link else ""
+    )
+    paper_review = (
+        f'<a href="{report.esc(paper_review_link)}">ICLR 2026 paper re-review</a>' if paper_review_link else ""
+    )
+    body = (
+        '<div class="callout"><strong>Decision question.</strong> Under the same fixed GPU pool and '
+        "committed-token speed floor, does AGG+AFD outperform AGG, and does AGG+AFD+MTP outperform AGG+MTP, "
+        "when the MoE backend is held fixed between the compared arms?</div>"
+        '<div class="nav">'
+        f"{backend_links}"
+        f'<a href="{report.esc(comparison_link)}">Cross-backend curves and exact tables</a>'
+        f"{data_link}"
+        f"{paper_review}"
+        "</div>"
+        "<h2>1. Backend overview</h2>"
+        '<p class="small muted">All three backend studies are present. A missing curve means that backend has no '
+        "matched AGG/AFD point satisfying both the SLA and measured-load envelope; it does not mean that the "
+        "backend was omitted.</p>"
+        + report.table(
+            [
+                "Backend report",
+                "Evidence layer",
+                "No-MTP coverage",
+                "MTP coverage",
+                "Observed AFD/AGG range",
+            ],
+            backend_overview_rows(sweeps, speed_floor=speed_floor, detail_reports=detail_reports),
+            css="wide",
+        )
+        + "<h2>2. Shared experiment contract</h2>"
+        + report.table(
+            ["Field", "Value"],
+            [
+                ["Hardware model", report.esc(str(contract["system"]))],
+                ["Fixed GPU pools", report.esc("/".join(map(str, contract["total_gpu_grid"])))],
+                ["SLA", f"≥ {speed_floor:g} committed tokens/s/user"],
+                ["Output length", "1024 tokens"],
+                ["Database mode", report.esc(str(contract["database_mode"]))],
+                ["AFD pipeline", report.esc(str(contract["pipeline_model"]))],
+                ["Models", report.esc(", ".join(reference["models"][key]["label"] for key in report.MODEL_ORDER))],
+            ],
+        )
+        + "<h2>3. How to navigate</h2>"
+        "<p>Open one of the three backend reports for its model-level setup, component timing, selected AGG/AFD "
+        "configurations, MTP accounting, validation, and limitations. Open the cross-backend page only when "
+        "comparing the three backend curves on identical axes. Open the paper re-review for the Figure 1&ndash;10 "
+        "audit against this exact simulation snapshot.</p>"
+        '<div class="callout warn"><strong>Evidence boundary.</strong> MegaMoE and DeepEP+DeepGEMM use B200 '
+        "measured F-stage profiles as load-matched GB200 projections with scale 1.0. They are not GB200 silicon "
+        "end-to-end measurements. Generic Mocker replay is reported only where replay data exists.</div>"
+        '<p class="foot">Self-contained HTML: charts and styling require no network access.</p>'
+    )
+    return report.document(
+        "AFD backend simulation report",
+        "Overview → backend simulations → model details → paper re-review",
+        body,
+    )
+
+
+def render_data_index(sweeps: list[tuple[str, dict]], source_specs: list[tuple[str, Path]]) -> str:
+    source_names = {label: path.name for label, path in source_specs}
+    rows = []
+    for label, payload in sweeps:
+        filename = source_names[label]
+        contract = payload["contract"]
+        if contract.get("afd_moe_profile"):
+            evidence = (
+                f"{contract.get('moe_profile_source_system') or 'measured'} measured F-stage; "
+                f"{contract.get('moe_profile_policy') or 'lookup'}; GB200 projection"
+            )
+        else:
+            evidence = "Generic AIC HYBRID database simulation"
+        rows.append(
+            [
+                report.esc(label),
+                f'<a href="{report.esc(filename)}">{report.esc(filename)}</a>',
+                report.esc(evidence),
+            ]
+        )
+    generic_mocker = "mocker_generic_zero_prefill_summary.json"
+    body = (
+        '<div class="nav"><a href="../index.html">Report overview</a>'
+        '<a href="../backend_comparison.html">Cross-backend comparison</a></div>'
+        "<h2>1. Sweep inputs</h2>"
+        + report.table(["Backend", "Sweep file", "Evidence layer"], rows, css="wide")
+        + "<h2>2. Dynamo Mocker replay</h2>"
+        + report.table(
+            ["Coverage", "Summary"],
+            [
+                [
+                    "Generic backend only; zero synthetic prefill",
+                    f'<a href="{generic_mocker}">{generic_mocker}</a>',
+                ],
+                ["MegaMoE", "No backend-specific Mocker replay"],
+                ["DeepEP+DeepGEMM", "No backend-specific Mocker replay"],
+            ],
+        )
+        + '<div class="callout warn"><strong>Storage note.</strong> The sweep JSON files are raw simulation '
+        "artifacts and can be large. The HTML pages are self-contained and do not load these files at runtime.</div>"
+    )
+    return report.document("Report data index", "Simulation inputs and replay provenance", body)
+
+
 def render(sweeps: list[tuple[str, dict]], speed_floor: float, detail_reports: dict[str, str] | None = None) -> str:
     for index, (label, _) in enumerate(sweeps):
         report.COLORS[label] = PALETTE[index % len(PALETTE)]
@@ -178,6 +354,17 @@ def render(sweeps: list[tuple[str, dict]], speed_floor: float, detail_reports: d
         for workload in model_contexts[model_key]:
             for with_mtp, mode in ((False, "No MTP"), (True, "With MTP")):
                 series, rows = prepared[(model_key, workload, with_mtp)]
+                missing_backends = [label for label, points in series.items() if not points]
+                comment = (
+                    "Above 1.0 favors AFD; below 1.0 favors AGG. Every backend is optimized independently, but "
+                    "its AGG and AFD arms use the same backend contract."
+                )
+                if missing_backends:
+                    comment += (
+                        " No matched point is available for: "
+                        + ", ".join(missing_backends)
+                        + "; these backends remain listed in the exact-value table."
+                    )
                 body += f"<h3>{workload.upper()} input · {mode}</h3>"
                 body += report.figure(
                     report.line_svg(
@@ -187,8 +374,7 @@ def render(sweeps: list[tuple[str, dict]], speed_floor: float, detail_reports: d
                         y_max=common_y_max,
                         reference_y=1.0,
                     ),
-                    "Above 1.0 favors AFD; below 1.0 favors AGG. Every backend is optimized independently, but its "
-                    "AGG and AFD arms use the same backend contract.",
+                    comment,
                     data_table=report.table(
                         [
                             "Backend curve",
@@ -223,6 +409,11 @@ def parse_args() -> argparse.Namespace:
         metavar="LABEL=RELATIVE_INDEX",
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--overview-output", type=Path)
+    parser.add_argument("--comparison-link", default="backend_comparison.html")
+    parser.add_argument("--data-index-output", type=Path)
+    parser.add_argument("--data-index-link", default="data/index.html")
+    parser.add_argument("--paper-review-link", default="paper_review/index.html")
     parser.add_argument("--speed-floor", type=float, default=30.0)
     args = parser.parse_args()
     if len(args.sweep) < 2:
@@ -243,6 +434,26 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render(sweeps, args.speed_floor, detail_reports), encoding="utf-8")
     print(output)
+    if args.overview_output:
+        overview_output = args.overview_output.resolve()
+        overview_output.parent.mkdir(parents=True, exist_ok=True)
+        overview_output.write_text(
+            render_overview(
+                sweeps,
+                speed_floor=args.speed_floor,
+                detail_reports=detail_reports,
+                comparison_link=args.comparison_link,
+                data_index_link=args.data_index_link if args.data_index_output else None,
+                paper_review_link=args.paper_review_link,
+            ),
+            encoding="utf-8",
+        )
+        print(overview_output)
+    if args.data_index_output:
+        data_index_output = args.data_index_output.resolve()
+        data_index_output.parent.mkdir(parents=True, exist_ok=True)
+        data_index_output.write_text(render_data_index(sweeps, args.sweep), encoding="utf-8")
+        print(data_index_output)
     return 0
 
 
